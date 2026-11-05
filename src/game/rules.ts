@@ -12,6 +12,7 @@ import {
   TABLE_WIDTH,
 } from '../physics/constants';
 import {
+  ActivePhysicsFlags,
   BallState,
   CueStrikeParams,
   INFINITE_POCKETS,
@@ -27,20 +28,31 @@ import { clamp } from '../physics/vector';
 
 export type BallGroup = 'solids' | 'stripes';
 export type PlayerIndex = 0 | 1;
-export type GameMode =
-  | 'normal'
-  | 'cheat'
-  | 'frictionless'
-  | 'portals'
-  | 'pinball'
-  | 'blackhole'
-  | 'infinite';
+export type TableModifier = 'infinite' | 'portals' | 'pinball' | 'blackhole' | 'frictionless';
+export type GameMode = 'normal' | 'cheat' | TableModifier;
+
+export const ALL_TABLE_MODIFIERS: readonly TableModifier[] = [
+  'infinite',
+  'portals',
+  'pinball',
+  'blackhole',
+  'frictionless',
+];
+
+export type GameSetupOptions =
+  | GameMode
+  | boolean
+  | {
+      modifiers?: readonly TableModifier[];
+      cheatMode?: boolean;
+    };
 
 export interface GameState {
   seq: number;
   updatedAt: number;
   rackSeed: number;
   gameMode?: GameMode;
+  modifiers?: TableModifier[];
   cheatMode?: boolean;
   balls: BallState[];
   currentPlayer: PlayerIndex;
@@ -54,24 +66,76 @@ export interface GameState {
   shotCount: number;
 }
 
-export function getGameMode(state: GameState): GameMode {
-  if (
-    state.gameMode === 'normal' ||
-    state.gameMode === 'cheat' ||
-    state.gameMode === 'frictionless' ||
-    state.gameMode === 'portals' ||
-    state.gameMode === 'pinball' ||
-    state.gameMode === 'blackhole' ||
-    state.gameMode === 'infinite'
-  ) {
-    return state.gameMode;
+export function getTableModifiers(state: GameState): TableModifier[] {
+  if (Array.isArray(state.modifiers)) {
+    return ALL_TABLE_MODIFIERS.filter((m) => state.modifiers!.includes(m));
   }
-  return state.cheatMode ? 'cheat' : 'normal';
+  if (
+    state.gameMode &&
+    state.gameMode !== 'normal' &&
+    state.gameMode !== 'cheat' &&
+    ALL_TABLE_MODIFIERS.includes(state.gameMode as TableModifier)
+  ) {
+    return [state.gameMode as TableModifier];
+  }
+  return [];
+}
+
+export function hasModifier(state: GameState, mod: TableModifier): boolean {
+  return getTableModifiers(state).includes(mod);
+}
+
+export function isSharedCheatEnabled(state: GameState): boolean {
+  return Boolean(state.cheatMode || state.gameMode === 'cheat');
+}
+
+export function getPhysicsFlagsFromState(state: GameState): ActivePhysicsFlags {
+  const mods = getTableModifiers(state);
+  return {
+    infinite: mods.includes('infinite'),
+    portals: mods.includes('portals'),
+    pinball: mods.includes('pinball'),
+    blackhole: mods.includes('blackhole'),
+    frictionless: mods.includes('frictionless'),
+  };
+}
+
+export function formatModifierName(mod: TableModifier): string {
+  switch (mod) {
+    case 'infinite':
+      return 'Infinite';
+    case 'portals':
+      return 'Portals';
+    case 'pinball':
+      return 'Pinball';
+    case 'blackhole':
+      return 'Black Hole';
+    case 'frictionless':
+      return 'Frictionless';
+  }
+}
+
+export function formatStateModifiersLabel(state: GameState): string {
+  const mods = getTableModifiers(state).map(formatModifierName);
+  const cheat = isSharedCheatEnabled(state);
+  if (cheat) {
+    mods.push('Cheat');
+  }
+  return mods.length > 0 ? mods.join(' + ') : 'Normal';
+}
+
+export function getGameMode(state: GameState): GameMode {
+  const mods = getTableModifiers(state);
+  if (mods.length > 0) {
+    return mods[0];
+  }
+  return isSharedCheatEnabled(state) ? 'cheat' : 'normal';
 }
 
 export function cloneGameState(state: GameState): GameState {
   return {
     ...state,
+    modifiers: state.modifiers ? [...state.modifiers] : undefined,
     balls: cloneBalls(state.balls),
     playerGroups: [state.playerGroups[0], state.playerGroups[1]],
   };
@@ -174,16 +238,34 @@ export function createRack(seed: number = 1337): BallState[] {
 
 export function createInitialGameState(
   seed: number = ((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) & 0x7fffffff) || 1,
-  modeOrCheat: GameMode | boolean = 'normal'
+  options: GameSetupOptions = 'normal'
 ): GameState {
-  const gameMode: GameMode =
-    typeof modeOrCheat === 'boolean' ? (modeOrCheat ? 'cheat' : 'normal') : modeOrCheat;
+  let modifiers: TableModifier[] = [];
+  let cheatMode = false;
+
+  if (typeof options === 'boolean') {
+    cheatMode = options;
+  } else if (typeof options === 'string') {
+    if (options === 'cheat') {
+      cheatMode = true;
+    } else if (options !== 'normal' && ALL_TABLE_MODIFIERS.includes(options as TableModifier)) {
+      modifiers = [options as TableModifier];
+    }
+  } else if (options && typeof options === 'object') {
+    cheatMode = Boolean(options.cheatMode);
+    if (Array.isArray(options.modifiers)) {
+      modifiers = ALL_TABLE_MODIFIERS.filter((m) => options.modifiers!.includes(m));
+    }
+  }
+
+  const gameMode: GameMode = modifiers[0] ?? (cheatMode ? 'cheat' : 'normal');
   return {
     seq: 1,
     updatedAt: Date.now(),
     rackSeed: seed,
     gameMode,
-    cheatMode: gameMode === 'cheat',
+    modifiers,
+    cheatMode,
     balls: createRack(seed),
     currentPlayer: 0,
     playerGroups: [null, null],
@@ -502,8 +584,8 @@ export function evaluateShotOutcome(
   }
 
   const eightPocketed = telemetry.pocketedBallIds.includes(8);
-  const mode = getGameMode(prevState);
-  const spotEarlyEight = mode === 'frictionless' || mode === 'pinball' || mode === 'infinite';
+  const flags = getPhysicsFlagsFromState(prevState);
+  const spotEarlyEight = flags.frictionless || flags.pinball || flags.infinite;
 
   // In Frictionless / Pinball mode, if the 8-ball is knocked in early before the shooter is on the 8-ball,
   // spot it back on the foot spot so chain-reaction ricochets don't end the game prematurely.
@@ -684,7 +766,7 @@ export function computeAimPreview(
   const cueBall = state.balls.find((b) => b.id === 0)!;
   const dx = Math.cos(aimAngle);
   const dy = Math.sin(aimAngle);
-  const isInfinite = getGameMode(state) === 'infinite';
+  const isInfinite = hasModifier(state, 'infinite');
 
   let minT = isInfinite ? 115.0 : Infinity;
   let hitBall: BallState | null = null;
@@ -867,9 +949,9 @@ export function computeCheatPreview(
   strike: CueStrikeParams,
   maxSteps?: number
 ): CheatPreview {
-  const mode = getGameMode(state);
+  const flags = getPhysicsFlagsFromState(state);
   const effectiveMaxSteps =
-    maxSteps ?? (mode === 'frictionless' || mode === 'pinball' ? 240 * 35 : 240 * 25);
+    maxSteps ?? (flags.frictionless || flags.pinball ? 240 * 35 : 240 * 25);
   const simBalls = cloneBalls(state.balls);
   const startPositions = new Map<number, { x: number; y: number; wasPocketed: boolean }>();
   const paths = new Map<number, BallTrajectoryPoint[]>();
@@ -890,7 +972,7 @@ export function computeCheatPreview(
   let steps = 0;
 
   while (steps < effectiveMaxSteps && areBallsMoving(simBalls)) {
-    stepPhysics(simBalls, telemetry, FIXED_DT, mode);
+    stepPhysics(simBalls, telemetry, FIXED_DT, flags);
     steps++;
 
     if (steps % 3 === 0) {
@@ -900,7 +982,7 @@ export function computeCheatPreview(
         const last = path[path.length - 1];
         if (b.pocketed) {
           if (b.pocketId !== null) {
-            const pk = mode === 'infinite' ? INFINITE_POCKETS[b.pocketId] : POCKETS[b.pocketId];
+            const pk = flags.infinite ? INFINITE_POCKETS[b.pocketId] : POCKETS[b.pocketId];
             if (pk && Math.hypot(pk.x - last.x, pk.y - last.y) > 0.1) {
               path.push({ x: pk.x, y: pk.y });
             }
@@ -932,7 +1014,7 @@ export function computeCheatPreview(
     let endX = b.x;
     let endY = b.y;
     if (pocketedThisShot && b.pocketId !== null) {
-      if (mode === 'infinite' && INFINITE_POCKETS[b.pocketId]) {
+      if (flags.infinite && INFINITE_POCKETS[b.pocketId]) {
         endX = INFINITE_POCKETS[b.pocketId].x;
         endY = INFINITE_POCKETS[b.pocketId].y;
       } else if (POCKETS[b.pocketId]) {

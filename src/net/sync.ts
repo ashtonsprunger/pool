@@ -2,12 +2,18 @@ import mqtt, { MqttClient } from 'mqtt';
 import { joinRoom, Room } from 'trystero/mqtt';
 import {
   GameMode,
+  GameSetupOptions,
   GameState,
   PlayerIndex,
+  TableModifier,
   cloneGameState,
   createInitialGameState,
   evaluateShotOutcome,
+  formatStateModifiersLabel,
   getGameMode,
+  getPhysicsFlagsFromState,
+  getTableModifiers,
+  isSharedCheatEnabled,
 } from '../game/rules';
 import {
   CueStrikeParams,
@@ -31,6 +37,9 @@ export interface RoomSummary {
   guestName: string | null;
   mySeat: PlayerIndex | null;
   gameMode: GameMode;
+  modifiers: TableModifier[];
+  cheatMode: boolean;
+  modeLabel: string;
   currentPlayer: PlayerIndex;
   winner: PlayerIndex | null;
   statusMessage: string;
@@ -198,8 +207,8 @@ export function resolvePendingShot(pending: PendingShotRecord): GameState {
     applyCueStrike(cueBall, pending.strike);
   }
   const telemetry = createInitialTelemetry();
-  const mode = getGameMode(pending.baseState);
-  simulateUntilRest(balls, telemetry, undefined, mode);
+  const flags = getPhysicsFlagsFromState(pending.baseState);
+  simulateUntilRest(balls, telemetry, undefined, flags);
   return evaluateShotOutcome(pending.baseState, balls, telemetry);
 }
 
@@ -527,6 +536,9 @@ export class MultiplayerCoordinator {
         guestName: sess.guestName ?? null,
         mySeat,
         gameMode: getGameMode(sess.state),
+        modifiers: getTableModifiers(sess.state),
+        cheatMode: isSharedCheatEnabled(sess.state),
+        modeLabel: formatStateModifiersLabel(sess.state),
         currentPlayer: sess.state.currentPlayer,
         winner: sess.state.winner,
         statusMessage: sess.state.statusMessage,
@@ -626,7 +638,7 @@ export class MultiplayerCoordinator {
     return this.session.state.currentPlayer === this.session.mySeat;
   }
 
-  public createMultiplayerRoom(modeOrCheat: GameMode | boolean = 'normal'): string {
+  public createMultiplayerRoom(options: GameSetupOptions = 'normal'): string {
     const code = generateRoomCode();
     this.session = {
       roomCode: code,
@@ -635,7 +647,7 @@ export class MultiplayerCoordinator {
       guestClientId: null,
       hostName: this.myPlayerName || null,
       guestName: null,
-      state: createInitialGameState(undefined, modeOrCheat),
+      state: createInitialGameState(undefined, options),
       pendingShot: null,
     };
     this.save();
@@ -876,10 +888,15 @@ export class MultiplayerCoordinator {
     });
   }
 
-  public startNewGame(modeOrCheat?: GameMode | boolean): GameState {
-    const effectiveMode =
-      modeOrCheat !== undefined ? modeOrCheat : getGameMode(this.session.state);
-    const fresh = createInitialGameState(undefined, effectiveMode);
+  public startNewGame(options?: GameSetupOptions): GameState {
+    const effectiveOptions: GameSetupOptions =
+      options !== undefined
+        ? options
+        : {
+            modifiers: getTableModifiers(this.session.state),
+            cheatMode: isSharedCheatEnabled(this.session.state),
+          };
+    const fresh = createInitialGameState(undefined, effectiveOptions);
     fresh.seq = this.session.state.seq + 1;
     this.session.state = fresh;
     this.session.pendingShot = null;
@@ -1073,7 +1090,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.senderId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              getGameMode(pkt.state) !== getGameMode(localClean)));
+              formatStateModifiersLabel(pkt.state) !== formatStateModifiersLabel(localClean)));
 
         if (shouldAdoptRemote) {
           if (
@@ -1096,7 +1113,7 @@ export class MultiplayerCoordinator {
           (localClean.seq === pkt.state.seq &&
             this.session.hostClientId === this.clientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              getGameMode(pkt.state) !== getGameMode(localClean))) ||
+              formatStateModifiersLabel(pkt.state) !== formatStateModifiersLabel(localClean))) ||
           this.session.guestClientId !== pkt.guestClientId ||
           this.session.hostClientId !== pkt.hostClientId ||
           this.session.guestName !== pkt.guestName ||
@@ -1141,7 +1158,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.hostClientId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              getGameMode(pkt.state) !== getGameMode(localClean)));
+              formatStateModifiersLabel(pkt.state) !== formatStateModifiersLabel(localClean)));
 
         if (shouldAdoptRemote) {
           // If we are currently animating this exact shot, let the visual animation finish

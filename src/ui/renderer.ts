@@ -1,4 +1,4 @@
-import { AimPreview, CheatPreview, GameState, getGameMode } from '../game/rules';
+import { AimPreview, CheatPreview, GameState, hasModifier } from '../game/rules';
 import { TableViewport, tableToScreen } from '../game/viewport';
 import {
   BALL_COLORS,
@@ -75,7 +75,7 @@ export function renderPoolTable(
     ctx.scale(vp.scale, vp.scale);
   }
 
-  const isInfinite = getGameMode(state) === 'infinite';
+  const isInfinite = hasModifier(state, 'infinite');
 
   if (isInfinite) {
     drawInfiniteTiledBoards(ctx, vp, state);
@@ -189,6 +189,8 @@ function drawInfiniteTiledBoards(
   state: GameState
 ): void {
   const bdr = vp.borderInches || RAIL_BORDER;
+  const isPortals = hasModifier(state, 'portals');
+  const isBlackHole = hasModifier(state, 'blackhole');
 
   ctx.save();
   ctx.beginPath();
@@ -249,6 +251,29 @@ function drawInfiniteTiledBoards(
   if (state.isBreakShot && state.ballInHand) {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.045)';
     ctx.fillRect(0, 0, HEAD_STRING_X, TABLE_WIDTH);
+  }
+
+  // Black Hole + Infinite: draw gravitational field rings around the grid pockets
+  if (isBlackHole) {
+    ctx.save();
+    for (const pk of INFINITE_POCKETS) {
+      const wellGrad = ctx.createRadialGradient(pk.x, pk.y, 1.5, pk.x, pk.y, 15.5);
+      wellGrad.addColorStop(0, 'rgba(168, 85, 247, 0.22)');
+      wellGrad.addColorStop(0.45, 'rgba(99, 102, 241, 0.08)');
+      wellGrad.addColorStop(1, 'rgba(99, 102, 241, 0)');
+      ctx.fillStyle = wellGrad;
+      ctx.beginPath();
+      ctx.arc(pk.x, pk.y, 15.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(pk.x, pk.y, 6.0, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.28)';
+      ctx.lineWidth = 0.11;
+      ctx.setLineDash([0.4, 0.35]);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Main Head String line
@@ -318,6 +343,8 @@ function drawInfiniteTiledBoards(
 
   // 5. Draw pockets at the grid seam intersections
   for (const pk of INFINITE_POCKETS) {
+    const isPortalPocket = isPortals && pk.type === 'side';
+
     ctx.beginPath();
     ctx.arc(pk.x, pk.y, pk.renderRadius + 0.28, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
@@ -333,17 +360,48 @@ function drawInfiniteTiledBoards(
       pk.y,
       pk.renderRadius
     );
-    pGrad.addColorStop(0, '#020408');
-    pGrad.addColorStop(0.8, '#090D16');
-    pGrad.addColorStop(1, '#1E293B');
+    if (isPortalPocket) {
+      const isTopBlue = pk.id === 4;
+      pGrad.addColorStop(0, isTopBlue ? '#E0F2FE' : '#FFEDD5');
+      pGrad.addColorStop(0.45, isTopBlue ? '#0284C7' : '#EA580C');
+      pGrad.addColorStop(0.85, isTopBlue ? '#0369A1' : '#9A3412');
+      pGrad.addColorStop(1, '#090D16');
+    } else if (isBlackHole) {
+      pGrad.addColorStop(0, '#000000');
+      pGrad.addColorStop(0.65, '#090414');
+      pGrad.addColorStop(0.9, '#3B0764');
+      pGrad.addColorStop(1, '#7E22CE');
+    } else {
+      pGrad.addColorStop(0, '#020408');
+      pGrad.addColorStop(0.8, '#090D16');
+      pGrad.addColorStop(1, '#1E293B');
+    }
     ctx.fillStyle = pGrad;
     ctx.fill();
 
-    ctx.beginPath();
-    ctx.arc(pk.x, pk.y, pk.renderRadius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.38)';
-    ctx.lineWidth = 0.12;
-    ctx.stroke();
+    if (isPortalPocket) {
+      const isTopBlue = pk.id === 4;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(pk.x, pk.y, pk.renderRadius * 0.92, 0, Math.PI * 2);
+      ctx.strokeStyle = isTopBlue ? '#38BDF8' : '#FB923C';
+      ctx.lineWidth = 0.22;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(pk.x, pk.y, pk.renderRadius * 0.56, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.lineWidth = 0.11;
+      ctx.setLineDash([0.35, 0.25]);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(pk.x, pk.y, pk.renderRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = isBlackHole ? 'rgba(192, 132, 252, 0.75)' : 'rgba(148, 163, 184, 0.38)';
+      ctx.lineWidth = isBlackHole ? 0.16 : 0.12;
+      ctx.stroke();
+    }
   }
 
   // Outer frame border around the preview viewport
@@ -462,10 +520,8 @@ function drawPlayingSurfaceAndMarkings(ctx: CanvasRenderingContext2D, state: Gam
   // Right foot cushion
   drawCushionPoly([[100, C], [100 + ct, CJ], [100 + ct, 50 - CJ], [100, 50 - C]]);
 
-  const mode = getGameMode(state);
-
   // Pinball Rails Mode: draw glowing neon bumper strips along the 6 main cushion noses
-  if (mode === 'pinball') {
+  if (hasModifier(state, 'pinball')) {
     ctx.save();
     ctx.lineCap = 'round';
     const bumperSegments: [number, number, number, number][] = [
@@ -495,7 +551,7 @@ function drawPlayingSurfaceAndMarkings(ctx: CanvasRenderingContext2D, state: Gam
   }
 
   // Black Hole Mode: draw subtle gravitational field rings clipped to the playing surface
-  if (mode === 'blackhole') {
+  if (hasModifier(state, 'blackhole')) {
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
@@ -555,11 +611,11 @@ function drawPlayingSurfaceAndMarkings(ctx: CanvasRenderingContext2D, state: Gam
 }
 
 function drawPockets(ctx: CanvasRenderingContext2D, state: GameState): void {
-  const mode = getGameMode(state);
+  const isPortals = hasModifier(state, 'portals');
+  const isBlackHole = hasModifier(state, 'blackhole');
 
   for (const p of POCKETS) {
-    const isPortalPocket = mode === 'portals' && p.type === 'side';
-    const isBlackHole = mode === 'blackhole';
+    const isPortalPocket = isPortals && p.type === 'side';
 
     // Outer dark leather/rubber pocket rim
     ctx.beginPath();
@@ -818,7 +874,7 @@ function drawCheatPreviewTrajectories(
   state?: GameState
 ): void {
   ctx.save();
-  const isInfinite = state ? getGameMode(state) === 'infinite' : false;
+  const isInfinite = state ? hasModifier(state, 'infinite') : false;
 
   for (const eb of cheatPreview.endBalls) {
     if (!eb.moved || eb.path.length < 2) continue;

@@ -1,15 +1,21 @@
 import {
+  ALL_TABLE_MODIFIERS,
   BallGroup,
   CheatPreview,
-  GameMode,
+  GameSetupOptions,
   GameState,
+  TableModifier,
   computeAimPreview,
   computeCheatPreview,
   evaluateShotOutcome,
   findNearestValidCueBallPosition,
-  getGameMode,
+  formatStateModifiersLabel,
+  getPhysicsFlagsFromState,
   getRemainingBallsForGroup,
+  getTableModifiers,
+  hasModifier,
   isPlayerOnEightBall,
+  isSharedCheatEnabled,
 } from './game/rules';
 import {
   INFINITE_PREVIEW_BORDER,
@@ -82,6 +88,10 @@ const modalRoomStatus = document.getElementById('modal-room-status') as HTMLElem
 const playerNameInput = document.getElementById('player-name-input') as HTMLInputElement;
 const gameModeSelect = document.getElementById('game-mode-select') as HTMLSelectElement;
 const secretCheatOption = document.getElementById('secret-cheat-option') as HTMLOptionElement;
+const modifierChipsContainer = document.getElementById('modifier-chips') as HTMLElement;
+const modifierChipButtons = Array.from(
+  modifierChipsContainer.querySelectorAll<HTMLButtonElement>('.modifier-chip')
+);
 const newRoomBtn = document.getElementById('new-room-btn') as HTMLButtonElement;
 const copyLinkBtn = document.getElementById('copy-link-btn') as HTMLButtonElement;
 const leaveRoomBtn = document.getElementById('leave-room-btn') as HTMLButtonElement;
@@ -123,6 +133,7 @@ let cachedCheatKey = '';
 let cachedCheatPreview: CheatPreview | null = null;
 let lastOrientedSeq = -1;
 let lastOrientedRackSeed = -1;
+const selectedModifiers = new Set<TableModifier>();
 const STORAGE_SECRET_CHEAT_KEY = 'pool8_secret_cheat_v1';
 let secretCheatForAshton = false;
 try {
@@ -153,30 +164,64 @@ function setSecretCheatForAshton(enabled: boolean): void {
 }
 
 function isLocalCheatActive(state: GameState): boolean {
-  if (getGameMode(state) === 'cheat') return true;
+  if (isSharedCheatEnabled(state)) return true;
   return secretCheatForAshton && isPlayerAshton();
 }
 
-function resolveSelectedNetworkMode(): GameMode {
+function syncModifierChipButtonsUi(): void {
+  for (const btn of modifierChipButtons) {
+    const mod = btn.dataset.mod as TableModifier | undefined;
+    const isActive = Boolean(mod && selectedModifiers.has(mod));
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', String(isActive));
+  }
+}
+
+function syncControlsFromState(state: GameState): void {
+  selectedModifiers.clear();
+  for (const mod of getTableModifiers(state)) {
+    selectedModifiers.add(mod);
+  }
+  syncModifierChipButtonsUi();
+
+  const sharedCheat = isSharedCheatEnabled(state);
+  const ashton = isPlayerAshton();
+  gameModeSelect.value =
+    secretCheatForAshton && ashton && !sharedCheat
+      ? 'secret_cheat'
+      : sharedCheat
+      ? 'cheat'
+      : 'normal';
+}
+
+for (const btn of modifierChipButtons) {
+  btn.addEventListener('click', () => {
+    const mod = btn.dataset.mod as TableModifier | undefined;
+    if (!mod) return;
+    if (selectedModifiers.has(mod)) {
+      selectedModifiers.delete(mod);
+    } else {
+      selectedModifiers.add(mod);
+    }
+    syncModifierChipButtonsUi();
+  });
+}
+
+function resolveSelectedGameSetup(): GameSetupOptions {
   const val = gameModeSelect.value;
+  let cheatMode = false;
   if (val === 'secret_cheat' && isPlayerAshton()) {
     setSecretCheatForAshton(true);
-    return 'normal';
-  }
-  if (val === 'normal' || val === 'cheat') {
+    cheatMode = false;
+  } else if (val === 'cheat') {
     setSecretCheatForAshton(false);
+    cheatMode = true;
+  } else {
+    setSecretCheatForAshton(false);
+    cheatMode = false;
   }
-  if (
-    val === 'cheat' ||
-    val === 'frictionless' ||
-    val === 'portals' ||
-    val === 'pinball' ||
-    val === 'blackhole' ||
-    val === 'infinite'
-  ) {
-    return val;
-  }
-  return 'normal';
+  const modifiers = ALL_TABLE_MODIFIERS.filter((m) => selectedModifiers.has(m));
+  return { modifiers, cheatMode };
 }
 
 // Parse initial URL ?room=CODE
@@ -244,9 +289,11 @@ coordinator = new MultiplayerCoordinator(initialRoomParam, {
   },
 });
 
+syncControlsFromState(coordinator.getState());
+
 function resizeCanvas(): void {
   const rect = stageEl.getBoundingClientRect();
-  const isInfinite = coordinator ? getGameMode(coordinator.getState()) === 'infinite' : false;
+  const isInfinite = coordinator ? hasModifier(coordinator.getState(), 'infinite') : false;
   const borderInches = isInfinite ? INFINITE_PREVIEW_BORDER : RAIL_BORDER;
   viewport = computeTableViewport(rect.width, rect.height, 3.5, borderInches);
   const dpr = window.devicePixelRatio || 1;
@@ -347,16 +394,6 @@ function formatStatusWithPlayerNames(rawMessage: string, p1Label: string, p2Labe
     .replace(/\bPlayer 2\b/g, p2Label);
 }
 
-function formatModeTag(mode: GameMode): string {
-  if (mode === 'cheat') return 'Cheat';
-  if (mode === 'frictionless') return 'Frictionless';
-  if (mode === 'portals') return 'Portals';
-  if (mode === 'pinball') return 'Pinball';
-  if (mode === 'blackhole') return 'Black Hole';
-  if (mode === 'infinite') return 'Infinite';
-  return 'Normal';
-}
-
 function renderActiveRoomsList(): void {
   const rooms: RoomSummary[] = coordinator.getActiveRooms();
   roomsCountBadge.textContent = String(rooms.length);
@@ -401,7 +438,7 @@ function renderActiveRoomsList(): void {
 
     const modeEl = document.createElement('span');
     modeEl.className = 'room-card-mode';
-    modeEl.textContent = formatModeTag(r.gameMode);
+    modeEl.textContent = r.modeLabel;
 
     top.appendChild(playersEl);
     top.appendChild(codeEl);
@@ -556,8 +593,8 @@ function syncHud(): void {
   statusChip.classList.toggle('foul', state.lastFoulReason !== null && state.winner === null);
 
   // Room button & Game Mode UI state
-  const currentMode = getGameMode(state);
-  const targetBorder = currentMode === 'infinite' ? INFINITE_PREVIEW_BORDER : RAIL_BORDER;
+  const isInfinite = hasModifier(state, 'infinite');
+  const targetBorder = isInfinite ? INFINITE_PREVIEW_BORDER : RAIL_BORDER;
   if (viewport.borderInches !== targetBorder) {
     resizeCanvas();
   }
@@ -565,17 +602,16 @@ function syncHud(): void {
   secretCheatOption.classList.toggle('hidden', !ashton);
   secretCheatOption.disabled = !ashton;
   if (!ashton && gameModeSelect.value === 'secret_cheat') {
-    gameModeSelect.value = currentMode;
+    gameModeSelect.value = isSharedCheatEnabled(state) ? 'cheat' : 'normal';
   }
 
   const isCheat = isLocalCheatActive(state);
-  const modeTag = formatModeTag(currentMode);
-  const modeSuffix = currentMode === 'normal' ? '' : ` · ${modeTag}`;
-  const modeLabel = currentMode === 'normal' ? '' : ` (${modeTag})`;
+  const modeTag = formatStateModifiersLabel(state);
+  const modeSuffix = modeTag === 'Normal' ? '' : ` · ${modeTag}`;
+  const modeLabel = modeTag === 'Normal' ? '' : ` (${modeTag})`;
 
   if (roomModal.classList.contains('hidden')) {
-    gameModeSelect.value =
-      secretCheatForAshton && ashton && currentMode === 'normal' ? 'secret_cheat' : currentMode;
+    syncControlsFromState(state);
   }
   fineAimWrap.classList.toggle('hidden', !isCheat);
   shootBtn.classList.toggle('hidden', !isCheat);
@@ -636,7 +672,7 @@ function maybeBroadcastAim(): void {
   const cueBall = state.balls.find((b) => b.id === 0);
   if (!cueBall) return;
   // In Secret Cheat mode, keep broadcasted power at 0 while aiming so opponent sees normal aiming
-  const isSecretOnly = secretCheatForAshton && isPlayerAshton() && getGameMode(state) !== 'cheat';
+  const isSecretOnly = secretCheatForAshton && isPlayerAshton() && !isSharedCheatEnabled(state);
   const broadcastPower = isSecretOnly && !isPullingPower ? 0 : pullBackPower;
   coordinator.broadcastAim(aimAngle, broadcastPower, spinX, spinY, cueBall.x, cueBall.y);
 }
@@ -869,12 +905,12 @@ function executeShot(strike: CueStrikeParams): void {
   const cueY = cueBall.y;
 
   // 1. Pre-compute deterministic settled state for persistence & peer sync
-  const mode = getGameMode(state);
+  const flags = getPhysicsFlagsFromState(state);
   const simBalls = cloneBalls(state.balls);
   const simCue = simBalls.find((b) => b.id === 0)!;
   applyCueStrike(simCue, strike);
   const simTelemetry = createInitialTelemetry();
-  simulateUntilRest(simBalls, simTelemetry, undefined, mode);
+  simulateUntilRest(simBalls, simTelemetry, undefined, flags);
   const settledState = evaluateShotOutcome(state, simBalls, simTelemetry);
 
   // 2. Record pending shot in localStorage & broadcast to peer
@@ -1007,11 +1043,7 @@ nameModalForm.addEventListener('submit', (ev) => {
 });
 
 roomBtn.addEventListener('click', () => {
-  const currentMode = getGameMode(coordinator.getState());
-  gameModeSelect.value =
-    secretCheatForAshton && isPlayerAshton() && currentMode === 'normal'
-      ? 'secret_cheat'
-      : currentMode;
+  syncControlsFromState(coordinator.getState());
   syncHud();
   roomModal.classList.remove('hidden');
   if (!coordinator.getMyPlayerName()) {
@@ -1024,11 +1056,7 @@ closeModalBtn.addEventListener('click', () => {
     if (!requireNameFromModalInput()) return;
   }
   roomModal.classList.add('hidden');
-  const currentMode = getGameMode(coordinator.getState());
-  gameModeSelect.value =
-    secretCheatForAshton && isPlayerAshton() && currentMode === 'normal'
-      ? 'secret_cheat'
-      : currentMode;
+  syncControlsFromState(coordinator.getState());
   syncHud();
 });
 
@@ -1047,7 +1075,7 @@ async function copyInviteLinkForRoom(code: string, btn: HTMLButtonElement, defau
 
 newRoomBtn.addEventListener('click', async () => {
   if (!requireNameFromModalInput()) return;
-  const code = coordinator.createMultiplayerRoom(resolveSelectedNetworkMode());
+  const code = coordinator.createMultiplayerRoom(resolveSelectedGameSetup());
   autoOrientAimTowardLegalTarget();
   syncHud();
   await copyInviteLinkForRoom(code, newRoomBtn, '+ New Room');
@@ -1058,7 +1086,7 @@ copyLinkBtn.addEventListener('click', async () => {
 
   let code = coordinator.getRoomCode();
   if (!code) {
-    code = coordinator.createMultiplayerRoom(resolveSelectedNetworkMode());
+    code = coordinator.createMultiplayerRoom(resolveSelectedGameSetup());
     autoOrientAimTowardLegalTarget();
   }
   syncHud();
@@ -1087,7 +1115,7 @@ joinRoomForm.addEventListener('submit', (ev) => {
 const handleStartNewRack = () => {
   isSimulating = false;
   pendingSettledStateFromRemote = null;
-  coordinator.startNewGame(resolveSelectedNetworkMode());
+  coordinator.startNewGame(resolveSelectedGameSetup());
   autoOrientAimTowardLegalTarget();
   roomModal.classList.add('hidden');
   syncHud();
@@ -1110,8 +1138,8 @@ function getMemoizedCheatPreview(state: GameState): CheatPreview | null {
   const cueBall = state.balls.find((b) => b.id === 0);
   if (!cueBall || cueBall.pocketed) return null;
   const effectivePower = clamp(pullBackPower || (state.isBreakShot ? 0.72 : 0.42), 0.05, 1.0);
-  const mode = getGameMode(state);
-  const key = `${state.seq}_${mode}_${cueBall.x.toFixed(4)}_${cueBall.y.toFixed(4)}_${aimAngle.toFixed(6)}_${effectivePower.toFixed(4)}_${spinX.toFixed(3)}_${spinY.toFixed(3)}`;
+  const modeKey = formatStateModifiersLabel(state);
+  const key = `${state.seq}_${modeKey}_${cueBall.x.toFixed(4)}_${cueBall.y.toFixed(4)}_${aimAngle.toFixed(6)}_${effectivePower.toFixed(4)}_${spinX.toFixed(3)}_${spinY.toFixed(3)}`;
   if (key !== cachedCheatKey || !cachedCheatPreview) {
     cachedCheatKey = key;
     cachedCheatPreview = computeCheatPreview(state, {
@@ -1130,8 +1158,8 @@ function animate(now: number): void {
   lastFrameTime = now;
 
   const state = coordinator.getState();
-  const currentMode = getGameMode(state);
-  const isFrictionless = currentMode === 'frictionless';
+  const flags = getPhysicsFlagsFromState(state);
+  const isFrictionless = flags.frictionless;
 
   if (isSimulating) {
     // In Frictionless mode, once the fastest ball slows below 22 in/s, smoothly ramp up timeScale
@@ -1150,7 +1178,7 @@ function animate(now: number): void {
     while (physicsAccumulator >= FIXED_DT && stepsThisFrame < 40) {
       physicsAccumulator -= FIXED_DT;
       stepsThisFrame++;
-      const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, currentMode);
+      const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, flags);
       if (!stillMoving) {
         isSimulating = false;
         physicsAccumulator = 0;

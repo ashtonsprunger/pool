@@ -1067,4 +1067,64 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
     expect(preview.hitBall?.id).toBe(2);
     expect(preview.ghostX).toBeLessThan(0); // Ghost ball sits on the left mirrored preview board
   });
+
+  it('supports mixing and matching any combination of Table Modifiers with Cheat mode', () => {
+    const comboState = createInitialGameState(950, {
+      modifiers: ['infinite', 'blackhole', 'portals'],
+      cheatMode: true,
+    });
+    expect(comboState.cheatMode).toBe(true);
+    expect(comboState.modifiers).toEqual(['infinite', 'portals', 'blackhole']);
+
+    // Verify cheat trajectory preview runs with all 3 modifiers active simultaneously
+    const cheatPreview = computeCheatPreview(comboState, {
+      angle: 0,
+      power: 0.65,
+      spinX: 0,
+      spinY: 0,
+    });
+    expect(cheatPreview.endBalls.length).toBe(16);
+
+    // Verify MultiplayerCoordinator syncs stacked modifiers + cheatMode across peers
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+    const host = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'ComboHost',
+      disableNetwork: true,
+    });
+    const guest = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'ComboGuest',
+      disableNetwork: true,
+    });
+
+    try {
+      const code = host.createMultiplayerRoom({
+        modifiers: ['pinball', 'blackhole'],
+        cheatMode: true,
+      });
+      const summary = host.getActiveRooms().find((r) => r.roomCode === code);
+      expect(summary?.modifiers).toEqual(['pinball', 'blackhole']);
+      expect(summary?.cheatMode).toBe(true);
+      expect(summary?.modeLabel).toBe('Pinball + Black Hole + Cheat');
+
+      guest.joinRoom(code, true);
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'combo_sync_1',
+        senderId: host.clientId,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+        state: host.getState(),
+      });
+      expect(guest.getState().modifiers).toEqual(['pinball', 'blackhole']);
+      expect(guest.getState().cheatMode).toBe(true);
+    } finally {
+      host.dispose();
+      guest.dispose();
+    }
+  });
 });

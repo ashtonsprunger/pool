@@ -137,20 +137,29 @@
 
             <label class="m3-select-row" for="game-mode-select">
               <div class="m3-switch-text">
-                <span class="m3-switch-title">Mode</span>
-                <span class="m3-switch-sub">Applies to new rooms &amp; racks</span>
+                <span class="m3-switch-title">Aim / Cheat</span>
+                <span class="m3-switch-sub">Aiming guide &amp; shot trajectory</span>
               </div>
               <select id="game-mode-select" class="m3-select">
                 <option value="normal">Normal</option>
-                <option value="infinite">Infinite</option>
-                <option value="portals">Portal Pockets</option>
-                <option value="pinball">Pinball Rails</option>
-                <option value="blackhole">Black Hole</option>
-                <option value="frictionless">Frictionless</option>
-                <option value="cheat">Cheat</option>
+                <option value="cheat">Cheat (Both Players)</option>
                 <option value="secret_cheat" id="secret-cheat-option" class="hidden">Cheat (Only Me)</option>
               </select>
             </label>
+
+            <div class="modifier-chips-row">
+              <div class="m3-switch-text">
+                <span class="m3-switch-title">Table Modifiers</span>
+                <span class="m3-switch-sub">Mix &amp; match any combination</span>
+              </div>
+              <div class="modifier-chips" id="modifier-chips">
+                <button type="button" class="modifier-chip" data-mod="infinite">Infinite</button>
+                <button type="button" class="modifier-chip" data-mod="portals">Portals</button>
+                <button type="button" class="modifier-chip" data-mod="pinball">Pinball Rails</button>
+                <button type="button" class="modifier-chip" data-mod="blackhole">Black Hole</button>
+                <button type="button" class="modifier-chip" data-mod="frictionless">Frictionless</button>
+              </div>
+            </div>
 
             <div class="sheet-row">
               <button class="m3-btn m3-btn-primary" id="new-room-btn" type="button">
