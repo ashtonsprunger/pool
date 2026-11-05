@@ -330,6 +330,8 @@ export class MultiplayerCoordinator {
   private discoveredRooms = new Map<string, { session: PersistedSession; lastSeenAt: number }>();
   private peerLastSeenAt = 0;
   private heartbeatTimer: number | null = null;
+  private hostClaimTimer: number | null = null;
+  private lastPersistedCloudSig = '';
 
   constructor(
     initialUrlRoom: string | null,
@@ -376,7 +378,8 @@ export class MultiplayerCoordinator {
     }
 
     if (!this.disableNetwork) {
-      const wildcardTopic = 'antigravity-pool8-v1/room/+';
+      const wildcardLiveTopic = 'antigravity-pool8-v1/room/+';
+      const wildcardStateTopic = 'antigravity-pool8-v1/room/+/state';
       for (const brokerUrl of MQTT_BROKERS) {
         try {
           const client = mqtt.connect(brokerUrl, {
@@ -385,15 +388,22 @@ export class MultiplayerCoordinator {
             connectTimeout: 8000,
           });
           client.on('connect', () => {
-            client.subscribe(wildcardTopic, { qos: 0 });
+            client.subscribe([wildcardLiveTopic, wildcardStateTopic], { qos: 1 });
           });
           client.on('message', (topic, payload) => {
             try {
+              const raw = payload.toString().trim();
+              if (!raw) return;
               const parts = topic.split('/');
-              const roomCode = (parts[parts.length - 1] ?? '').trim().toUpperCase();
+              // Topic is either antigravity-pool8-v1/room/{CODE} or antigravity-pool8-v1/room/{CODE}/state
+              const roomCode = (parts[2] ?? '').trim().toUpperCase();
               if (!roomCode) return;
-              const pkt = JSON.parse(payload.toString()) as NetPacket;
+              const pkt = JSON.parse(raw) as NetPacket;
               this.observeRoomPacket(roomCode, pkt);
+              // If this retained state is for our currently active room, process it immediately
+              if (this.session.roomCode === roomCode && topic.endsWith('/state')) {
+                this.handlePacket(pkt, { fromRetainedCache: true });
+              }
             } catch {
               // Ignore malformed packets
             }
@@ -403,6 +413,95 @@ export class MultiplayerCoordinator {
           // Ignore broker failure
         }
       }
+
+      this.refreshSavedRoomsFromServer();
+    }
+  }
+
+  private refreshSavedRoomsFromServer(): void {
+    if (this.disableNetwork || typeof fetch === 'undefined') return;
+    const savedCodes = getStoredRoomIndex();
+    for (const code of savedCodes.slice(0, 12)) {
+      if (code === this.session.roomCode) continue;
+      this.fetchRoomStateFromServer(code, false);
+    }
+  }
+
+  private fetchRoomStateFromServer(rawCode: string, isCurrentJoin: boolean): void {
+    if (this.disableNetwork || typeof fetch === 'undefined') return;
+    const code = rawCode.trim().toUpperCase();
+    if (!code) return;
+
+    fetch(`/api/room?code=${encodeURIComponent(code)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { packet?: NetPacket | null } | null) => {
+        if (!data || !data.packet) return;
+        const pkt = data.packet;
+        this.observeRoomPacket(code, pkt);
+        if (isCurrentJoin && this.session.roomCode === code) {
+          this.handlePacket(pkt, { fromRetainedCache: true });
+        }
+      })
+      .catch(() => {
+        // Ignore offline/local dev errors when /api/room is unavailable
+      });
+  }
+
+  private buildAuthoritativeSyncPacket(): Extract<NetPacket, { type: 'SYNC_STATE' }> | null {
+    if (!this.session.roomCode || !this.session.hostClientId) return null;
+    const cleanState = this.getCleanAuthoritativeState();
+    return {
+      type: 'SYNC_STATE',
+      msgId: generateId(),
+      senderId: this.clientId,
+      senderName: this.myPlayerName || null,
+      hostClientId: this.session.hostClientId,
+      guestClientId: this.session.guestClientId,
+      hostName: this.session.hostName ?? null,
+      guestName: this.session.guestName ?? null,
+      state: cloneGameState(cleanState),
+    };
+  }
+
+  private persistAuthoritativeRoomSnapshot(forceMqttPublish: boolean = false): void {
+    if (this.disableNetwork || !this.session.roomCode || !this.session.hostClientId) return;
+    const code = this.session.roomCode;
+    const syncPkt = this.buildAuthoritativeSyncPacket();
+    if (!syncPkt) return;
+
+    const cue = syncPkt.state.balls.find((b) => b.id === 0);
+    const sig = `${code}:${syncPkt.hostClientId}:${syncPkt.guestClientId ?? ''}:${
+      syncPkt.hostName ?? ''
+    }:${syncPkt.guestName ?? ''}:${syncPkt.state.seq}:${syncPkt.state.rackSeed}:${formatStateModifiersLabel(
+      syncPkt.state
+    )}:${cue ? `${cue.x.toFixed(2)},${cue.y.toFixed(2)}` : ''}`;
+
+    const changed = sig !== this.lastPersistedCloudSig;
+    if (!changed && !forceMqttPublish) return;
+    this.lastPersistedCloudSig = sig;
+
+    this.seenMsgIds.add(syncPkt.msgId);
+    const stateTopic = `antigravity-pool8-v1/room/${code}/state`;
+    const json = JSON.stringify(syncPkt);
+    for (const client of this.mqttClients) {
+      if (client.connected) {
+        client.publish(stateTopic, json, { qos: 1, retain: true });
+      }
+    }
+
+    if (changed && typeof fetch !== 'undefined') {
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomCode: code, packet: syncPkt }),
+        keepalive: true,
+      }).catch(() => {
+        // Ignore network/local dev errors
+      });
     }
   }
 
@@ -569,6 +668,26 @@ export class MultiplayerCoordinator {
     if (!code) return;
     removePersistedRoom(code);
     this.discoveredRooms.delete(code);
+
+    if (!this.disableNetwork) {
+      const stateTopic = `antigravity-pool8-v1/room/${code}/state`;
+      for (const client of [...this.mqttClients, ...this.lobbyMqttClients]) {
+        if (client.connected) {
+          try {
+            client.publish(stateTopic, '', { qos: 1, retain: true });
+          } catch {
+            // Ignore
+          }
+        }
+      }
+      if (typeof fetch !== 'undefined') {
+        fetch(`/api/room?code=${encodeURIComponent(code)}`, {
+          method: 'DELETE',
+          keepalive: true,
+        }).catch(() => {});
+      }
+    }
+
     if (this.session.roomCode === code) {
       this.leaveRoomToSolo();
     } else {
@@ -596,6 +715,7 @@ export class MultiplayerCoordinator {
     this.save();
     if (this.session.roomCode) {
       this.sendHello();
+      this.persistAuthoritativeRoomSnapshot();
     }
     this.notifyConnection();
   }
@@ -661,13 +781,32 @@ export class MultiplayerCoordinator {
 
     this.disconnectTransports();
 
-    // Check if we have a saved session for this room code
+    // Check if we have a saved session or discovered retained session for this room code
     const savedForRoom = loadPersistedSession(code);
+    const discoveredForRoom = !resetIfNew ? this.discoveredRooms.get(code)?.session : undefined;
+
     if (savedForRoom.roomCode === code && !resetIfNew && savedForRoom.hostClientId) {
       this.session = savedForRoom;
       if (this.session.hostClientId === this.clientId) {
         this.session.mySeat = 0;
       } else if (this.session.guestClientId === this.clientId) {
+        this.session.mySeat = 1;
+      } else if (!this.session.guestClientId) {
+        this.session.guestClientId = this.clientId;
+        this.session.mySeat = 1;
+      } else {
+        this.session.mySeat = null;
+      }
+    } else if (discoveredForRoom && discoveredForRoom.hostClientId) {
+      this.session = {
+        ...discoveredForRoom,
+        state: cloneGameState(discoveredForRoom.state),
+        pendingShot: null,
+      };
+      if (this.session.hostClientId === this.clientId) {
+        this.session.mySeat = 0;
+      } else if (!this.session.guestClientId || this.session.guestClientId === this.clientId) {
+        this.session.guestClientId = this.clientId;
         this.session.mySeat = 1;
       } else {
         this.session.mySeat = null;
@@ -705,7 +844,10 @@ export class MultiplayerCoordinator {
     }
 
     if (!this.disableNetwork) {
-      // 2. Trystero WebRTC P2P Room
+      // 2. Fetch authoritative room snapshot from Vercel Runtime Cache (/api/room)
+      this.fetchRoomStateFromServer(code, true);
+
+      // 3. Trystero WebRTC P2P Room
       try {
         this.trysteroRoom = joinRoom(
           { appId: 'antigravity-pool-8ball-v1', relayUrls: MQTT_BROKERS },
@@ -737,8 +879,9 @@ export class MultiplayerCoordinator {
         // Fallback to MQTT-over-WSS & BroadcastChannel
       }
 
-      // 3. Direct MQTT-over-WSS Pub/Sub Fallback (works even when WebRTC UDP is blocked by mobile NAT)
+      // 4. Direct MQTT-over-WSS Pub/Sub + Retained State Channel (/state) for Offline Async Play
       const topic = `antigravity-pool8-v1/room/${code}`;
+      const stateTopic = `antigravity-pool8-v1/room/${code}/state`;
       for (const brokerUrl of MQTT_BROKERS) {
         try {
           const client = mqtt.connect(brokerUrl, {
@@ -747,14 +890,21 @@ export class MultiplayerCoordinator {
             connectTimeout: 8000,
           });
           client.on('connect', () => {
-            client.subscribe(topic, { qos: 0 }, () => {
+            client.subscribe([topic, stateTopic], { qos: 1 }, () => {
               this.sendHello();
+              if (this.session.hostClientId) {
+                this.persistAuthoritativeRoomSnapshot(true);
+              }
             });
           });
-          client.on('message', (_t, payload) => {
+          client.on('message', (msgTopic, payload) => {
             try {
-              const pkt = JSON.parse(payload.toString()) as NetPacket;
-              this.handlePacket(pkt);
+              const raw = payload.toString().trim();
+              if (!raw) return;
+              const pkt = JSON.parse(raw) as NetPacket;
+              this.handlePacket(pkt, {
+                fromRetainedCache: msgTopic.endsWith('/state'),
+              });
             } catch {
               // Ignore malformed packets
             }
@@ -767,9 +917,14 @@ export class MultiplayerCoordinator {
     }
 
     this.sendHello();
-    // If no peer claims host within 2000ms and we don't have a seat yet, we become host (Seat 0)
+    if (this.session.hostClientId) {
+      this.persistAuthoritativeRoomSnapshot(true);
+    }
+
+    // If no existing room state exists on MQTT retained storage or /api/room after 3500ms, claim Host (Seat 0)
     const scheduleTimeout = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
-    scheduleTimeout(() => {
+    const timeoutMs = this.disableNetwork ? 2000 : 3500;
+    this.hostClaimTimer = scheduleTimeout(() => {
       if (
         this.session.roomCode === code &&
         this.session.mySeat === null &&
@@ -781,8 +936,9 @@ export class MultiplayerCoordinator {
         this.save();
         this.notifyConnection();
         this.sendHello();
+        this.persistAuthoritativeRoomSnapshot(true);
       }
-    }, 2000);
+    }, timeoutMs) as unknown as number;
 
     const scheduleInterval = typeof window !== 'undefined' ? window.setInterval : setInterval;
     this.heartbeatTimer = scheduleInterval(() => {
@@ -833,6 +989,9 @@ export class MultiplayerCoordinator {
         strike,
         settledState: cloneGameState(settledState),
       });
+      // Immediately persist the deterministic settled outcome to MQTT retained /state & /api/room
+      // so even if the shooter closes their tab mid-animation, the opponent gets the completed move!
+      this.persistAuthoritativeRoomSnapshot(true);
     }
   }
 
@@ -853,6 +1012,7 @@ export class MultiplayerCoordinator {
         guestName: this.session.guestName ?? null,
         state: this.session.state,
       });
+      this.persistAuthoritativeRoomSnapshot();
     }
   }
 
@@ -863,6 +1023,7 @@ export class MultiplayerCoordinator {
     cueBall.y = y;
     this.session.state.updatedAt = Date.now();
     this.save();
+    this.persistAuthoritativeRoomSnapshot();
   }
 
   public broadcastAim(
@@ -909,6 +1070,7 @@ export class MultiplayerCoordinator {
         senderId: this.clientId,
         state: cloneGameState(fresh),
       });
+      this.persistAuthoritativeRoomSnapshot(true);
     }
     return fresh;
   }
@@ -972,6 +1134,9 @@ export class MultiplayerCoordinator {
         if (client.connected) {
           client.publish(topic, json, { qos: 0 });
         }
+      }
+      if (pkt.type === 'SYNC_STATE') {
+        this.persistAuthoritativeRoomSnapshot();
       }
     }
   }
@@ -1064,15 +1229,19 @@ export class MultiplayerCoordinator {
     }
   }
 
-  public handlePacket(pkt: NetPacket): void {
-    if (!pkt || !pkt.msgId || pkt.senderId === this.clientId) return;
+  public handlePacket(pkt: NetPacket, options?: { fromRetainedCache?: boolean }): void {
+    if (!pkt || !pkt.msgId) return;
+    if (!options?.fromRetainedCache && pkt.senderId === this.clientId) return;
     if (this.seenMsgIds.has(pkt.msgId)) return;
     this.seenMsgIds.add(pkt.msgId);
 
-    this.peerLastSeenAt = Date.now();
+    if (!options?.fromRetainedCache) {
+      this.peerLastSeenAt = Date.now();
+    }
 
     switch (pkt.type) {
       case 'HELLO': {
+        const hadHostBefore = Boolean(this.session.hostClientId);
         this.reconcilePeerRoles(
           pkt.senderId,
           pkt.hostClientId,
@@ -1085,10 +1254,12 @@ export class MultiplayerCoordinator {
 
         const localClean = this.getCleanAuthoritativeState();
         const shouldAdoptRemote =
+          (!hadHostBefore && Boolean(pkt.hostClientId)) ||
           pkt.state.seq > localClean.seq ||
           (pkt.state.seq === localClean.seq &&
             this.session.hostClientId !== this.clientId &&
-            pkt.senderId === this.session.hostClientId &&
+            (pkt.senderId === this.session.hostClientId ||
+              pkt.hostClientId === this.session.hostClientId) &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
               formatStateModifiersLabel(pkt.state) !== formatStateModifiersLabel(localClean)));
 
@@ -1141,6 +1312,7 @@ export class MultiplayerCoordinator {
       }
 
       case 'SYNC_STATE': {
+        const hadHostBefore = Boolean(this.session.hostClientId);
         this.reconcilePeerRoles(
           pkt.senderId,
           pkt.hostClientId,
@@ -1153,6 +1325,7 @@ export class MultiplayerCoordinator {
 
         const localClean = this.getCleanAuthoritativeState();
         const shouldAdoptRemote =
+          (!hadHostBefore && Boolean(pkt.hostClientId)) ||
           pkt.state.seq > localClean.seq ||
           (pkt.state.seq === localClean.seq &&
             this.session.hostClientId !== this.clientId &&
@@ -1178,6 +1351,20 @@ export class MultiplayerCoordinator {
         } else {
           this.save();
         }
+
+        // If we just joined an offline room via retained/cached state and claimed Seat 1 (or have a newer seq),
+        // persist the updated seat/name/state back to MQTT retained storage & /api/room!
+        const updatedClean = this.getCleanAuthoritativeState();
+        if (
+          this.session.hostClientId &&
+          (this.session.guestClientId !== pkt.guestClientId ||
+            this.session.guestName !== pkt.guestName ||
+            this.session.hostName !== pkt.hostName ||
+            updatedClean.seq > pkt.state.seq)
+        ) {
+          this.persistAuthoritativeRoomSnapshot(true);
+        }
+
         this.notifyConnection();
         break;
       }
@@ -1288,6 +1475,10 @@ export class MultiplayerCoordinator {
   }
 
   private disconnectTransports(): void {
+    if (this.hostClaimTimer !== null) {
+      clearTimeout(this.hostClaimTimer);
+      this.hostClaimTimer = null;
+    }
     if (this.heartbeatTimer !== null) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;

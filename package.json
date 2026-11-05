@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@vercel/functions": "^3.10.6",
     "mqtt": "^5.10.3",
     "trystero": "^0.20.1"
   },

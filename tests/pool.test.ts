@@ -1138,4 +1138,143 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
       guest.dispose();
     }
   });
+
+  it('supports asynchronous turn-based offline play when one player makes a move, closes their tab, and the opponent opens the room later', () => {
+    const hostStore = new Map<string, string>();
+    const guestStore = new Map<string, string>();
+
+    const useStore = (store: Map<string, string>) => {
+      (globalThis as unknown as { localStorage: Storage }).localStorage = {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          store.set(k, v);
+        },
+        removeItem: (k: string) => {
+          store.delete(k);
+        },
+        clear: () => store.clear(),
+        key: () => null,
+        length: 0,
+      };
+    };
+
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+
+    // 1. Host creates a room on Device A, takes a shot, and closes their tab immediately
+    useStore(hostStore);
+    const host = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'OfflineHost_A',
+      disableNetwork: true,
+      playerName: 'Ashton',
+    });
+
+    const code = host.createMultiplayerRoom('normal');
+    const preShotState = host.getState();
+    const strike = { angle: 0.02, power: 0.85, spinX: 0, spinY: 0 };
+    const settledAfterHostShot = resolvePendingShot({
+      baseState: preShotState,
+      cueX: 25,
+      cueY: 25,
+      strike,
+    });
+    // Force turn to pass to Player 2 (Guest) after Host's shot
+    settledAfterHostShot.currentPlayer = 1;
+
+    host.recordShotStart(25, 25, strike, settledAfterHostShot);
+    host.commitSettledState(settledAfterHostShot);
+
+    // Snapshot the retained SYNC_STATE packet that persistAuthoritativeRoomSnapshot publishes
+    const retainedSnapshotPacket = {
+      type: 'SYNC_STATE' as const,
+      msgId: 'retained_host_move_1',
+      senderId: host.clientId,
+      senderName: host.getMyPlayerName(),
+      hostClientId: host.getHostClientId()!,
+      guestClientId: host.getGuestClientId(),
+      hostName: host.getHostName(),
+      guestName: host.getGuestName(),
+      state: cloneGameState(host.getState()),
+    };
+
+    // Host closes their browser tab completely
+    host.dispose();
+
+    // 2. Later, Guest opens the room link on Device B (completely separate localStorage)
+    useStore(guestStore);
+    const guest = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'OfflineGuest_B',
+      disableNetwork: true,
+      playerName: 'Jordan',
+    });
+
+    try {
+      guest.joinRoom(code, true);
+      // Before receiving retained state, Guest does not know the host or rack
+      expect(guest.getHostClientId()).toBeNull();
+
+      // Broker / Vercel Runtime Cache delivers the retained room snapshot while Host is offline
+      guest.handlePacket(retainedSnapshotPacket, { fromRetainedCache: true });
+
+      // Guest adopts Host's exact post-shot board state, claims Seat 1, and sees it's their turn
+      expect(guest.getHostClientId()).toBe('OfflineHost_A');
+      expect(guest.getGuestClientId()).toBe('OfflineGuest_B');
+      expect(guest.getHostName()).toBe('Ashton');
+      expect(guest.getGuestName()).toBe('Jordan');
+      expect(guest.getMySeat()).toBe(1);
+      expect(guest.getState().seq).toBe(settledAfterHostShot.seq);
+      expect(guest.getState().rackSeed).toBe(preShotState.rackSeed);
+      expect(guest.isMyTurn()).toBe(true);
+      // Host is offline, so peerConnected remains false (no false live green indicator)
+      expect(guest.isPeerConnected()).toBe(false);
+
+      // 3. Guest takes their turn and closes their tab; Host reopens later and receives Guest's retained snapshot
+      const guestStrike = { angle: -0.15, power: 0.7, spinX: 0, spinY: 0 };
+      const cueBall = guest.getState().balls.find((b) => b.id === 0)!;
+      const settledAfterGuestShot = resolvePendingShot({
+        baseState: guest.getState(),
+        cueX: cueBall.x,
+        cueY: cueBall.y,
+        strike: guestStrike,
+      });
+      settledAfterGuestShot.currentPlayer = 0;
+      guest.commitSettledState(settledAfterGuestShot);
+
+      const retainedGuestPacket = {
+        type: 'SYNC_STATE' as const,
+        msgId: 'retained_guest_move_2',
+        senderId: guest.clientId,
+        senderName: guest.getMyPlayerName(),
+        hostClientId: guest.getHostClientId()!,
+        guestClientId: guest.getGuestClientId(),
+        hostName: guest.getHostName(),
+        guestName: guest.getGuestName(),
+        state: cloneGameState(guest.getState()),
+      };
+
+      // Host reopens the app on Device A
+      useStore(hostStore);
+      const hostReopened = new MultiplayerCoordinator(code, noopCallbacks, {
+        clientId: 'OfflineHost_A',
+        disableNetwork: true,
+        playerName: 'Ashton',
+      });
+      try {
+        hostReopened.handlePacket(retainedGuestPacket, { fromRetainedCache: true });
+        expect(hostReopened.getMySeat()).toBe(0);
+        expect(hostReopened.getGuestClientId()).toBe('OfflineGuest_B');
+        expect(hostReopened.getGuestName()).toBe('Jordan');
+        expect(hostReopened.getState().seq).toBe(settledAfterGuestShot.seq);
+        expect(hostReopened.isMyTurn()).toBe(true);
+      } finally {
+        hostReopened.dispose();
+      }
+    } finally {
+      guest.dispose();
+    }
+  });
 });
