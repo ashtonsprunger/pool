@@ -1,11 +1,13 @@
 import mqtt, { MqttClient } from 'mqtt';
 import { joinRoom, Room } from 'trystero/mqtt';
 import {
+  GameMode,
   GameState,
   PlayerIndex,
   cloneGameState,
   createInitialGameState,
   evaluateShotOutcome,
+  getGameMode,
 } from '../game/rules';
 import {
   CueStrikeParams,
@@ -178,7 +180,8 @@ export function resolvePendingShot(pending: PendingShotRecord): GameState {
     applyCueStrike(cueBall, pending.strike);
   }
   const telemetry = createInitialTelemetry();
-  simulateUntilRest(balls, telemetry);
+  const isFrictionless = getGameMode(pending.baseState) === 'frictionless';
+  simulateUntilRest(balls, telemetry, undefined, isFrictionless);
   return evaluateShotOutcome(pending.baseState, balls, telemetry);
 }
 
@@ -346,7 +349,7 @@ export class MultiplayerCoordinator {
     return this.session.state.currentPlayer === this.session.mySeat;
   }
 
-  public createMultiplayerRoom(cheatMode: boolean = false): string {
+  public createMultiplayerRoom(modeOrCheat: GameMode | boolean = 'normal'): string {
     const code = generateRoomCode();
     this.session = {
       roomCode: code,
@@ -355,7 +358,7 @@ export class MultiplayerCoordinator {
       guestClientId: null,
       hostName: this.myPlayerName || null,
       guestName: null,
-      state: createInitialGameState(undefined, cheatMode),
+      state: createInitialGameState(undefined, modeOrCheat),
       pendingShot: null,
     };
     this.save();
@@ -593,9 +596,10 @@ export class MultiplayerCoordinator {
     });
   }
 
-  public startNewGame(cheatMode?: boolean): GameState {
-    const useCheat = cheatMode !== undefined ? cheatMode : Boolean(this.session.state.cheatMode);
-    const fresh = createInitialGameState(undefined, useCheat);
+  public startNewGame(modeOrCheat?: GameMode | boolean): GameState {
+    const effectiveMode =
+      modeOrCheat !== undefined ? modeOrCheat : getGameMode(this.session.state);
+    const fresh = createInitialGameState(undefined, effectiveMode);
     fresh.seq = this.session.state.seq + 1;
     this.session.state = fresh;
     this.session.pendingShot = null;
@@ -781,7 +785,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.senderId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode)));
+              getGameMode(pkt.state) !== getGameMode(localClean)));
 
         if (shouldAdoptRemote) {
           if (
@@ -804,7 +808,7 @@ export class MultiplayerCoordinator {
           (localClean.seq === pkt.state.seq &&
             this.session.hostClientId === this.clientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode))) ||
+              getGameMode(pkt.state) !== getGameMode(localClean))) ||
           this.session.guestClientId !== pkt.guestClientId ||
           this.session.hostClientId !== pkt.hostClientId ||
           this.session.guestName !== pkt.guestName ||
@@ -849,7 +853,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.hostClientId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode)));
+              getGameMode(pkt.state) !== getGameMode(localClean)));
 
         if (shouldAdoptRemote) {
           // If we are currently animating this exact shot, let the visual animation finish

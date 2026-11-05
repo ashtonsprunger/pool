@@ -1,11 +1,13 @@
 import {
   BallGroup,
   CheatPreview,
+  GameMode,
   GameState,
   computeAimPreview,
   computeCheatPreview,
   evaluateShotOutcome,
   findNearestValidCueBallPosition,
+  getGameMode,
   getRemainingBallsForGroup,
   isPlayerOnEightBall,
 } from './game/rules';
@@ -22,6 +24,7 @@ import {
   applyCueStrike,
   cloneBalls,
   createInitialTelemetry,
+  getMaxBallSpeed,
   simulateUntilRest,
   stepPhysics,
 } from './physics/engine';
@@ -76,7 +79,7 @@ const spinDoneBtn = document.getElementById('spin-done-btn') as HTMLButtonElemen
 const roomModal = document.getElementById('room-modal') as HTMLElement;
 const modalRoomStatus = document.getElementById('modal-room-status') as HTMLElement;
 const playerNameInput = document.getElementById('player-name-input') as HTMLInputElement;
-const cheatModeToggle = document.getElementById('cheat-mode-toggle') as HTMLInputElement;
+const gameModeSelect = document.getElementById('game-mode-select') as HTMLSelectElement;
 const copyLinkBtn = document.getElementById('copy-link-btn') as HTMLButtonElement;
 const leaveRoomBtn = document.getElementById('leave-room-btn') as HTMLButtonElement;
 const joinRoomForm = document.getElementById('join-room-form') as HTMLFormElement;
@@ -350,10 +353,24 @@ function syncHud(): void {
   statusChip.textContent = formattedStatus;
   statusChip.classList.toggle('foul', state.lastFoulReason !== null && state.winner === null);
 
-  // Room button & Cheat Mode UI state
-  const isCheat = Boolean(state.cheatMode);
+  // Room button & Game Mode UI state
+  const currentMode = getGameMode(state);
+  const isCheat = currentMode === 'cheat';
+  const modeSuffix =
+    currentMode === 'cheat'
+      ? ' · Cheat'
+      : currentMode === 'frictionless'
+      ? ' · Frictionless'
+      : '';
+  const modeLabel =
+    currentMode === 'cheat'
+      ? ' (Cheat)'
+      : currentMode === 'frictionless'
+      ? ' (Frictionless)'
+      : '';
+
   if (roomModal.classList.contains('hidden')) {
-    cheatModeToggle.checked = isCheat;
+    gameModeSelect.value = currentMode;
   }
   fineAimWrap.classList.toggle('hidden', !isCheat);
   shootBtn.classList.toggle('hidden', !isCheat);
@@ -364,15 +381,13 @@ function syncHud(): void {
 
   if (!roomCode) {
     connDot.className = 'conn-dot';
-    roomBtnLabel.textContent = isCheat ? 'Multiplayer · Cheat' : 'Multiplayer';
-    modalRoomStatus.textContent = isCheat
-      ? 'Mode: Local Pass & Play (Cheat Mode)'
-      : 'Mode: Local Pass & Play';
+    roomBtnLabel.textContent = `Multiplayer${modeSuffix}`;
+    modalRoomStatus.textContent = `Mode: Local Pass & Play${modeLabel}`;
     leaveRoomBtn.classList.add('hidden');
   } else {
     connDot.className = peerOnline ? 'conn-dot connected' : 'conn-dot waiting';
     const baseRoomLabel = isSpectator ? `Room ${roomCode} (View)` : `Room ${roomCode}`;
-    roomBtnLabel.textContent = isCheat ? `${baseRoomLabel} · Cheat` : baseRoomLabel;
+    roomBtnLabel.textContent = `${baseRoomLabel}${modeSuffix}`;
     const opponentName = mySeat === 0 ? guestName : mySeat === 1 ? hostName : null;
     modalRoomStatus.textContent = isSpectator
       ? `Room ${roomCode} — Spectating`
@@ -638,11 +653,12 @@ function executeShot(strike: CueStrikeParams): void {
   const cueY = cueBall.y;
 
   // 1. Pre-compute deterministic settled state for persistence & peer sync
+  const isFrictionless = getGameMode(state) === 'frictionless';
   const simBalls = cloneBalls(state.balls);
   const simCue = simBalls.find((b) => b.id === 0)!;
   applyCueStrike(simCue, strike);
   const simTelemetry = createInitialTelemetry();
-  simulateUntilRest(simBalls, simTelemetry);
+  simulateUntilRest(simBalls, simTelemetry, undefined, isFrictionless);
   const settledState = evaluateShotOutcome(state, simBalls, simTelemetry);
 
   // 2. Record pending shot in localStorage & broadcast to peer
@@ -756,7 +772,7 @@ nameModalForm.addEventListener('submit', (ev) => {
 });
 
 roomBtn.addEventListener('click', () => {
-  cheatModeToggle.checked = Boolean(coordinator.getState().cheatMode);
+  gameModeSelect.value = getGameMode(coordinator.getState());
   syncHud();
   roomModal.classList.remove('hidden');
   if (!coordinator.getMyPlayerName()) {
@@ -769,7 +785,7 @@ closeModalBtn.addEventListener('click', () => {
     if (!requireNameFromModalInput()) return;
   }
   roomModal.classList.add('hidden');
-  cheatModeToggle.checked = Boolean(coordinator.getState().cheatMode);
+  gameModeSelect.value = getGameMode(coordinator.getState());
 });
 
 copyLinkBtn.addEventListener('click', async () => {
@@ -777,7 +793,7 @@ copyLinkBtn.addEventListener('click', async () => {
 
   let code = coordinator.getRoomCode();
   if (!code) {
-    code = coordinator.createMultiplayerRoom(cheatModeToggle.checked);
+    code = coordinator.createMultiplayerRoom(gameModeSelect.value as GameMode);
   }
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${code}`;
   try {
@@ -814,7 +830,7 @@ joinRoomForm.addEventListener('submit', (ev) => {
 const handleStartNewRack = () => {
   isSimulating = false;
   pendingSettledStateFromRemote = null;
-  coordinator.startNewGame(cheatModeToggle.checked);
+  coordinator.startNewGame(gameModeSelect.value as GameMode);
   autoOrientAimTowardLegalTarget();
   roomModal.classList.add('hidden');
   syncHud();
@@ -856,12 +872,26 @@ function animate(now: number): void {
   lastFrameTime = now;
 
   const state = coordinator.getState();
+  const currentMode = getGameMode(state);
+  const isFrictionless = currentMode === 'frictionless';
 
   if (isSimulating) {
-    physicsAccumulator += dt;
-    while (physicsAccumulator >= FIXED_DT) {
+    // In Frictionless mode, once the fastest ball slows below 28 in/s, smoothly fast-forward
+    // so the remaining glide/ricochets stay visually brisk instead of dragging out.
+    let timeScale = 1;
+    if (isFrictionless) {
+      const maxSpeed = getMaxBallSpeed(state.balls);
+      if (maxSpeed > 0 && maxSpeed < 28) {
+        timeScale = clamp(32 / Math.max(0.65, maxSpeed), 1.5, 28);
+      }
+    }
+
+    physicsAccumulator += dt * timeScale;
+    let stepsThisFrame = 0;
+    while (physicsAccumulator >= FIXED_DT && stepsThisFrame < 140) {
       physicsAccumulator -= FIXED_DT;
-      const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT);
+      stepsThisFrame++;
+      const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, isFrictionless);
       if (!stillMoving) {
         isSimulating = false;
         physicsAccumulator = 0;
@@ -878,7 +908,7 @@ function animate(now: number): void {
   }
 
   const showAim = !isSimulating && state.winner === null;
-  const isCheat = Boolean(state.cheatMode);
+  const isCheat = currentMode === 'cheat';
   const aimPreview = showAim && !isCheat ? computeAimPreview(state, aimAngle) : null;
   const cheatPreview = showAim && isCheat ? getMemoizedCheatPreview(state) : null;
 

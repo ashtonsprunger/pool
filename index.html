@@ -127,13 +127,16 @@
               autocomplete="nickname"
             />
 
-            <label class="m3-switch-row" for="cheat-mode-toggle">
+            <label class="m3-select-row" for="game-mode-select">
               <div class="m3-switch-text">
-                <span class="m3-switch-title">Cheat Mode</span>
-                <span class="m3-switch-sub" id="cheat-mode-sub">Full end-state preview (applies on new room / rack)</span>
+                <span class="m3-switch-title">Mode</span>
+                <span class="m3-switch-sub">Applies on new room or rack</span>
               </div>
-              <input type="checkbox" id="cheat-mode-toggle" class="m3-switch-input" />
-              <span class="m3-switch-track"><span class="m3-switch-thumb"></span></span>
+              <select id="game-mode-select" class="m3-select">
+                <option value="normal">Normal</option>
+                <option value="cheat">Cheat</option>
+                <option value="frictionless">Frictionless</option>
+              </select>
             </label>
 
             <div class="sheet-row">

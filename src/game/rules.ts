@@ -26,11 +26,13 @@ import { clamp } from '../physics/vector';
 
 export type BallGroup = 'solids' | 'stripes';
 export type PlayerIndex = 0 | 1;
+export type GameMode = 'normal' | 'cheat' | 'frictionless';
 
 export interface GameState {
   seq: number;
   updatedAt: number;
   rackSeed: number;
+  gameMode?: GameMode;
   cheatMode?: boolean;
   balls: BallState[];
   currentPlayer: PlayerIndex;
@@ -42,6 +44,17 @@ export interface GameState {
   statusMessage: string;
   lastFoulReason: string | null;
   shotCount: number;
+}
+
+export function getGameMode(state: GameState): GameMode {
+  if (
+    state.gameMode === 'normal' ||
+    state.gameMode === 'cheat' ||
+    state.gameMode === 'frictionless'
+  ) {
+    return state.gameMode;
+  }
+  return state.cheatMode ? 'cheat' : 'normal';
 }
 
 export function cloneGameState(state: GameState): GameState {
@@ -149,13 +162,16 @@ export function createRack(seed: number = 1337): BallState[] {
 
 export function createInitialGameState(
   seed: number = ((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) & 0x7fffffff) || 1,
-  cheatMode: boolean = false
+  modeOrCheat: GameMode | boolean = 'normal'
 ): GameState {
+  const gameMode: GameMode =
+    typeof modeOrCheat === 'boolean' ? (modeOrCheat ? 'cheat' : 'normal') : modeOrCheat;
   return {
     seq: 1,
     updatedAt: Date.now(),
     rackSeed: seed,
-    cheatMode,
+    gameMode,
+    cheatMode: gameMode === 'cheat',
     balls: createRack(seed),
     currentPlayer: 0,
     playerGroups: [null, null],
@@ -474,9 +490,14 @@ export function evaluateShotOutcome(
   }
 
   const eightPocketed = telemetry.pocketedBallIds.includes(8);
+  const isFrictionless = getGameMode(prevState) === 'frictionless';
 
-  // 3. CHECK 8-BALL WIN / LOSS
-  if (eightPocketed) {
+  // In Frictionless mode, if the 8-ball is knocked in early before the shooter is on the 8-ball,
+  // spot it back on the foot spot so chain-reaction ricochets don't end the game prematurely.
+  if (eightPocketed && isFrictionless && !wasShootingAtEight) {
+    spotBallOnFootSpot(8, balls);
+  } else if (eightPocketed) {
+    // 3. CHECK 8-BALL WIN / LOSS
     if (wasShootingAtEight && foulReason === null) {
       return {
         ...prevState,

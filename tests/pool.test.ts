@@ -27,6 +27,7 @@ import {
   evaluateShotOutcome,
   findNearestValidCueBallPosition,
   getBallGroup,
+  getGameMode,
   isValidCueBallPosition,
 } from '../src/game/rules';
 import {
@@ -867,6 +868,55 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
 
       // Guest must NOT have received any additional onStateUpdated calls that would reset their aim
       expect(guestStateUpdateCount).toBe(2);
+    } finally {
+      host.dispose();
+      guest.dispose();
+    }
+  });
+
+  it('glides with zero cloth deceleration in Frictionless mode and syncs mode across peers', () => {
+    const ball = createBall(0, 15, 25);
+    applyCueStrike(ball, { angle: 0, power: 0.25, spinX: 0, spinY: 0 });
+    const initialSpeed = Math.hypot(ball.vx, ball.vy);
+    const telemetry = createInitialTelemetry();
+
+    // Advance 60 steps (0.25 seconds) across open table in Frictionless mode
+    for (let i = 0; i < 60; i++) {
+      stepPhysics([ball], telemetry, 1 / 240, true);
+    }
+    const speedAfterGlide = Math.hypot(ball.vx, ball.vy);
+    expect(speedAfterGlide).toBeCloseTo(initialSpeed, 5);
+
+    // Verify MultiplayerCoordinator syncs 'frictionless' mode to Guest
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+    const host = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'FricHost',
+      disableNetwork: true,
+    });
+    const guest = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'FricGuest',
+      disableNetwork: true,
+    });
+
+    try {
+      const code = host.createMultiplayerRoom('frictionless');
+      expect(getGameMode(host.getState())).toBe('frictionless');
+
+      guest.joinRoom(code, true);
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'fric_sync_1',
+        senderId: host.clientId,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+        state: host.getState(),
+      });
+      expect(getGameMode(guest.getState())).toBe('frictionless');
     } finally {
       host.dispose();
       guest.dispose();

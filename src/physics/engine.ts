@@ -163,13 +163,31 @@ function integrateQuaternion(b: BallState, dt: number): void {
 /**
  * Advances a single ball's position, linear velocity, and 3D angular velocity over dt,
  * accurately modeling the transition from sliding friction (MU_SLIDE) to rolling resistance (MU_ROLL).
+ * In frictionless mode, cloth friction is completely removed so balls glide without deceleration.
  */
-function stepBallMotion(b: BallState, dt: number): void {
+function stepBallMotion(b: BallState, dt: number, frictionless: boolean = false): void {
   if (b.pocketed) return;
 
   // 1. Advance position
   b.x += b.vx * dt;
   b.y += b.vy * dt;
+
+  if (frictionless) {
+    const vMag = Math.hypot(b.vx, b.vy);
+    // Stop cutoff once pocketed balls and rail rebounds have drained nearly all kinetic energy
+    if (vMag < 0.65) {
+      b.vx = 0;
+      b.vy = 0;
+      b.wx = 0;
+      b.wy = 0;
+      b.wz = 0;
+      return;
+    }
+    b.wy = b.vx / BALL_RADIUS;
+    b.wx = -b.vy / BALL_RADIUS;
+    integrateQuaternion(b, dt);
+    return;
+  }
 
   // 2. Cloth contact point relative to ball center is (0, 0, -R).
   // Slip velocity of ball bottom relative to cloth: u = v + w x (0, 0, -R) = (vx - R*wy, vy + R*wx)
@@ -272,7 +290,11 @@ function checkPockets(balls: BallState[], telemetry: ShotTelemetry): void {
  * Resolves collisions between a ball and cushion segments + jaw knuckles,
  * incorporating restitution, english (wz) throw, and topspin/backspin retention.
  */
-function resolveCushionCollisions(balls: BallState[], telemetry: ShotTelemetry): void {
+function resolveCushionCollisions(
+  balls: BallState[],
+  telemetry: ShotTelemetry,
+  frictionless: boolean = false
+): void {
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
     if (b.pocketed) continue;
@@ -313,7 +335,7 @@ function resolveCushionCollisions(balls: BallState[], telemetry: ShotTelemetry):
 
         const vn = b.vx * nx + b.vy * ny;
         if (vn < 0) {
-          applyCushionImpulse(b, nx, ny, -vn, seg.isJaw);
+          applyCushionImpulse(b, nx, ny, -vn, seg.isJaw, frictionless);
           if (!seg.isJaw) {
             hitRailThisStep = true;
           }
@@ -336,7 +358,7 @@ function resolveCushionCollisions(balls: BallState[], telemetry: ShotTelemetry):
 
         const vn = b.vx * nx + b.vy * ny;
         if (vn < 0) {
-          applyCushionImpulse(b, nx, ny, -vn, true);
+          applyCushionImpulse(b, nx, ny, -vn, true, frictionless);
           hitRailThisStep = true;
         }
       }
@@ -373,13 +395,22 @@ function applyCushionImpulse(
   nx: number,
   ny: number,
   approachSpeed: number,
-  isJaw: boolean
+  isJaw: boolean,
+  frictionless: boolean = false
 ): void {
   // Tangent vector t = (-ny, nx) so that n x t = +z
   const tx = -ny;
   const ty = nx;
 
   const vt = b.vx * tx + b.vy * ty;
+  if (frictionless) {
+    const restitution = isJaw ? 0.88 : 0.92;
+    const newVn = Math.max(0, approachSpeed * restitution);
+    b.vx = nx * newVn + tx * vt;
+    b.vy = ny * newVn + ty * vt;
+    return;
+  }
+
   const restitution = isJaw ? CUSHION_RESTITUTION * 0.85 : CUSHION_RESTITUTION;
 
   // Normal rebound velocity
@@ -408,7 +439,11 @@ function applyCushionImpulse(
  * Resolves all ball-to-ball collisions with restitution and frictional throw/spin transfer.
  * Uses multi-pass relaxation so tight 15-ball racks propagate impulse without ID-order bias.
  */
-function resolveBallBallCollisions(balls: BallState[], telemetry: ShotTelemetry): void {
+function resolveBallBallCollisions(
+  balls: BallState[],
+  telemetry: ShotTelemetry,
+  frictionless: boolean = false
+): void {
   const n = balls.length;
   for (let pass = 0; pass < 3; pass++) {
     let anyCollision = false;
@@ -457,8 +492,9 @@ function resolveBallBallCollisions(balls: BallState[], telemetry: ShotTelemetry)
           const vn = rvx * nx + rvy * ny;
 
           if (vn > 0) {
+            const restitution = frictionless ? 0.98 : BALL_RESTITUTION;
             // Normal impulse for equal-mass spheres with restitution e
-            const jn = 0.5 * (1 + BALL_RESTITUTION) * vn;
+            const jn = 0.5 * (1 + restitution) * vn;
 
             // Tangent vector t = (-ny, nx)
             const tx = -ny;
@@ -468,7 +504,9 @@ function resolveBallBallCollisions(balls: BallState[], telemetry: ShotTelemetry)
             // With our wz convention (where surface vel at -R*n is vt - R*wz),
             // surface vel at +R*n on A is v_At + R*a.wz, and at -R*n on B is v_Bt - R*b.wz.
             const vt = rvx * tx + rvy * ty + BALL_RADIUS * (a.wz + b.wz);
-            const jt = -Math.sign(vt) * Math.min(BALL_FRICTION * jn, (1 / 7) * Math.abs(vt));
+            const jt = frictionless
+              ? 0
+              : -Math.sign(vt) * Math.min(BALL_FRICTION * jn, (1 / 7) * Math.abs(vt));
 
             a.vx -= jn * nx - jt * tx;
             a.vy -= jn * ny - jt * ty;
@@ -489,14 +527,9 @@ function resolveBallBallCollisions(balls: BallState[], telemetry: ShotTelemetry)
 }
 
 /**
- * Advances the entire table physics by one fixed timestep (FIXED_DT = 1/240 s),
- * dynamically subdividing into micro-steps when balls are moving fast to prevent tunneling.
+ * Returns the maximum linear speed (in/s) among all non-pocketed balls on the table.
  */
-export function stepPhysics(
-  balls: BallState[],
-  telemetry: ShotTelemetry,
-  dt: number = FIXED_DT
-): boolean {
+export function getMaxBallSpeed(balls: readonly BallState[]): number {
   let maxSpeed = 0;
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
@@ -505,6 +538,20 @@ export function stepPhysics(
       if (spd > maxSpeed) maxSpeed = spd;
     }
   }
+  return maxSpeed;
+}
+
+/**
+ * Advances the entire table physics by one fixed timestep (FIXED_DT = 1/240 s),
+ * dynamically subdividing into micro-steps when balls are moving fast to prevent tunneling.
+ */
+export function stepPhysics(
+  balls: BallState[],
+  telemetry: ShotTelemetry,
+  dt: number = FIXED_DT,
+  frictionless: boolean = false
+): boolean {
+  const maxSpeed = getMaxBallSpeed(balls);
 
   // Adaptive sub-stepping: ensure no ball moves more than 0.22 * BALL_RADIUS per micro-step
   const maxStepDist = BALL_RADIUS * 0.22;
@@ -513,11 +560,11 @@ export function stepPhysics(
 
   for (let s = 0; s < subSteps; s++) {
     for (let i = 0; i < balls.length; i++) {
-      stepBallMotion(balls[i], subDt);
+      stepBallMotion(balls[i], subDt, frictionless);
     }
     checkPockets(balls, telemetry);
-    resolveBallBallCollisions(balls, telemetry);
-    resolveCushionCollisions(balls, telemetry);
+    resolveBallBallCollisions(balls, telemetry, frictionless);
+    resolveCushionCollisions(balls, telemetry, frictionless);
     checkPockets(balls, telemetry);
   }
 
@@ -551,15 +598,17 @@ export function areBallsMoving(balls: readonly BallState[]): boolean {
 export function simulateUntilRest(
   balls: BallState[],
   telemetry: ShotTelemetry,
-  maxSteps: number = 240 * 25
+  maxSteps?: number,
+  frictionless: boolean = false
 ): number {
+  const effectiveMaxSteps = maxSteps ?? (frictionless ? 240 * 120 : 240 * 25);
   let steps = 0;
-  while (steps < maxSteps && areBallsMoving(balls)) {
-    stepPhysics(balls, telemetry, FIXED_DT);
+  while (steps < effectiveMaxSteps && areBallsMoving(balls)) {
+    stepPhysics(balls, telemetry, FIXED_DT, frictionless);
     steps++;
   }
   // Ensure clean stop if maxSteps reached
-  if (steps >= maxSteps) {
+  if (steps >= effectiveMaxSteps) {
     for (const b of balls) {
       b.vx = 0;
       b.vy = 0;
