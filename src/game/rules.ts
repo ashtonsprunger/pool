@@ -768,25 +768,43 @@ export function computeAimPreview(
   const dy = Math.sin(aimAngle);
   const isInfinite = hasModifier(state, 'infinite');
 
-  let minT = isInfinite ? 115.0 : Infinity;
+  let minT = isInfinite ? 210.0 : Infinity;
   let hitBall: BallState | null = null;
 
+  // In Infinite mode, if the aim ray enters one of the 4 corner pockets on the grid, cap minT at that pocket
+  if (isInfinite) {
+    const pocketRadius = 2.15;
+    for (let gx = -2; gx <= 3; gx++) {
+      for (let gy = -2; gy <= 3; gy++) {
+        const px = gx * TABLE_LENGTH;
+        const py = gy * TABLE_WIDTH;
+        const ocx = px - cueBall.x;
+        const ocy = py - cueBall.y;
+        const proj = ocx * dx + ocy * dy;
+        if (proj <= 0) continue;
+        const perpSq = ocx * ocx + ocy * ocy - proj * proj;
+        if (perpSq >= pocketRadius * pocketRadius) continue;
+        const tPocket = proj - Math.sqrt(pocketRadius * pocketRadius - perpSq);
+        if (tPocket > 0 && tPocket < minT) {
+          minT = tPocket;
+        }
+      }
+    }
+  }
+
   // 1. Check intersection with all non-pocketed object balls (swept circle radius = 2 * BALL_RADIUS).
-  // In Infinite mode, also check the 8 surrounding periodic table copies so aiming across a seam hits the mirrored ball!
+  // In Infinite mode, also check surrounding periodic table copies so aiming across a seam hits the mirrored/wrapped ball!
   const hitRadius = BALL_DIAMETER;
-  const offsets: readonly [number, number][] = isInfinite
-    ? [
-        [0, 0],
-        [-TABLE_LENGTH, 0],
-        [TABLE_LENGTH, 0],
-        [0, -TABLE_WIDTH],
-        [0, TABLE_WIDTH],
-        [-TABLE_LENGTH, -TABLE_WIDTH],
-        [TABLE_LENGTH, -TABLE_WIDTH],
-        [-TABLE_LENGTH, TABLE_WIDTH],
-        [TABLE_LENGTH, TABLE_WIDTH],
-      ]
-    : [[0, 0]];
+  const offsets: [number, number][] = [];
+  if (isInfinite) {
+    for (let gx = -2; gx <= 2; gx++) {
+      for (let gy = -2; gy <= 2; gy++) {
+        offsets.push([gx * TABLE_LENGTH, gy * TABLE_WIDTH]);
+      }
+    }
+  } else {
+    offsets.push([0, 0]);
+  }
 
   for (const [ox, oy] of offsets) {
     for (const b of state.balls) {

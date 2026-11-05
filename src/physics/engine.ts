@@ -115,6 +115,16 @@ export const INFINITE_POCKETS: readonly {
   { id: 1, x: 100.0, y: 0.0, radius: 2.15, renderRadius: 2.35, type: 'corner' },
   { id: 2, x: 0.0, y: 50.0, radius: 2.15, renderRadius: 2.35, type: 'corner' },
   { id: 3, x: 100.0, y: 50.0, radius: 2.15, renderRadius: 2.35, type: 'corner' },
+];
+
+export const INFINITE_SIDE_PORTALS: readonly {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  renderRadius: number;
+  type: 'side';
+}[] = [
   { id: 4, x: 50.0, y: 0.0, radius: 2.15, renderRadius: 2.35, type: 'side' },
   { id: 5, x: 50.0, y: 50.0, radius: 2.15, renderRadius: 2.35, type: 'side' },
 ];
@@ -416,7 +426,11 @@ function checkPockets(
   telemetry: ShotTelemetry,
   flags: ActivePhysicsFlags
 ): void {
-  const pocketList = flags.infinite ? INFINITE_POCKETS : POCKETS;
+  const pocketList = flags.infinite
+    ? flags.portals
+      ? [...INFINITE_POCKETS, ...INFINITE_SIDE_PORTALS]
+      : INFINITE_POCKETS
+    : POCKETS;
 
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
@@ -428,7 +442,7 @@ function checkPockets(
       const dy = b.y - pocket.y;
       if (dx * dx + dy * dy <= pocket.radius * pocket.radius) {
         if (flags.portals && pocket.type === 'side') {
-          const fromTopSide = pocket.id === 1;
+          const fromTopSide = pocket.id === 1 || pocket.id === 4;
           const offsetX = clamp(b.x - 50.0, -1.2, 1.2);
           const exitX = 50.0 + offsetX * 0.5;
           let exitY = fromTopSide

@@ -15,7 +15,7 @@ import {
   TABLE_LENGTH,
   TABLE_WIDTH,
 } from '../physics/constants';
-import { BallState, INFINITE_POCKETS } from '../physics/engine';
+import { BallState, INFINITE_POCKETS, INFINITE_SIDE_PORTALS } from '../physics/engine';
 
 export interface RenderInputState {
   aimAngle: number;
@@ -88,9 +88,9 @@ export function renderPoolTable(
   // Draw Aim Preview or Cheat Mode Trajectories (below balls/cue so balls sit cleanly on top)
   if (input.showAim && state.winner === null) {
     if (cheatPreview) {
-      drawCheatPreviewTrajectories(ctx, cheatPreview, state);
+      drawCheatPreviewTrajectories(ctx, cheatPreview, state, vp);
     } else if (aimPreview) {
-      drawAimGuide(ctx, aimPreview, vp.isPortrait);
+      drawAimGuide(ctx, aimPreview, vp.isPortrait, isInfinite, vp);
     }
   }
 
@@ -171,7 +171,7 @@ export function renderPoolTable(
 
   // Draw Cheat Mode End-State Ghost Balls
   if (input.showAim && cheatPreview && state.winner === null) {
-    drawCheatPreviewEndBalls(ctx, cheatPreview, vp.isPortrait);
+    drawCheatPreviewEndBalls(ctx, cheatPreview, vp.isPortrait, isInfinite, vp);
   }
 
   // Draw Cue Stick when aiming
@@ -253,7 +253,7 @@ function drawInfiniteTiledBoards(
     ctx.fillRect(0, 0, HEAD_STRING_X, TABLE_WIDTH);
   }
 
-  // Black Hole + Infinite: draw gravitational field rings around the grid pockets
+  // Black Hole + Infinite: draw gravitational field rings around the 4 corner pockets
   if (isBlackHole) {
     ctx.save();
     for (const pk of INFINITE_POCKETS) {
@@ -331,7 +331,7 @@ function drawInfiniteTiledBoards(
     ctx.fill();
   };
   for (let i = 1; i <= 7; i++) {
-    if (i === 4) continue;
+    if (i === 4 && isPortals) continue;
     drawSeamDiamond(i * 12.5, 0);
     drawSeamDiamond(i * 12.5, TABLE_WIDTH);
   }
@@ -341,8 +341,12 @@ function drawInfiniteTiledBoards(
   }
   ctx.restore();
 
-  // 5. Draw pockets at the grid seam intersections
-  for (const pk of INFINITE_POCKETS) {
+  // 5. Draw the 4 corner pockets at the grid seam intersections (plus side portals if Portals modifier is on)
+  const pocketsToDraw = isPortals
+    ? [...INFINITE_POCKETS, ...INFINITE_SIDE_PORTALS]
+    : INFINITE_POCKETS;
+
+  for (const pk of pocketsToDraw) {
     const isPortalPocket = isPortals && pk.type === 'side';
 
     ctx.beginPath();
@@ -807,114 +811,309 @@ function drawBall(ctx: CanvasRenderingContext2D, b: BallState, isPortrait: boole
 function drawAimGuide(
   ctx: CanvasRenderingContext2D,
   preview: AimPreview,
-  _isPortrait: boolean
+  _isPortrait: boolean,
+  isInfinite: boolean = false,
+  vp?: TableViewport
 ): void {
-  ctx.save();
+  const drawSingleAimGuide = (ox: number, oy: number) => {
+    const cx = preview.cueX + ox;
+    const cy = preview.cueY + oy;
+    const gx = preview.ghostX + ox;
+    const gy = preview.ghostY + oy;
 
-  const lineColor = preview.isLegalTarget
-    ? 'rgba(255, 255, 255, 0.65)'
-    : 'rgba(248, 113, 113, 0.85)';
+    const lineColor = preview.isLegalTarget
+      ? 'rgba(255, 255, 255, 0.65)'
+      : 'rgba(248, 113, 113, 0.85)';
 
-  // Main aim ray from cue ball to ghost ball
-  ctx.beginPath();
-  ctx.moveTo(preview.cueX, preview.cueY);
-  ctx.lineTo(preview.ghostX, preview.ghostY);
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth = 0.13;
-  ctx.setLineDash([0.5, 0.35]);
-  ctx.stroke();
-
-  // Ghost ball circle
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.arc(preview.ghostX, preview.ghostY, BALL_RADIUS, 0, Math.PI * 2);
-  ctx.strokeStyle = preview.isLegalTarget
-    ? 'rgba(255, 255, 255, 0.8)'
-    : 'rgba(248, 113, 113, 0.95)';
-  ctx.lineWidth = 0.14;
-  ctx.stroke();
-  ctx.fillStyle = preview.isLegalTarget
-    ? 'rgba(255, 255, 255, 0.12)'
-    : 'rgba(248, 113, 113, 0.18)';
-  ctx.fill();
-
-  // Object ball path & cue ball tangent line on legal contact
-  if (preview.hitBall) {
-    // Object ball post-impact line
+    // Main aim ray from cue ball to ghost ball
     ctx.beginPath();
-    ctx.moveTo(preview.hitBall.x, preview.hitBall.y);
-    ctx.lineTo(
-      preview.hitBall.x + preview.targetDirX * 8.5,
-      preview.hitBall.y + preview.targetDirY * 8.5
-    );
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(gx, gy);
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 0.13;
+    ctx.setLineDash([0.5, 0.35]);
+    ctx.stroke();
+
+    // Ghost ball circle
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(gx, gy, BALL_RADIUS, 0, Math.PI * 2);
     ctx.strokeStyle = preview.isLegalTarget
-      ? 'rgba(56, 189, 248, 0.85)'
-      : 'rgba(248, 113, 113, 0.8)';
-    ctx.lineWidth = 0.16;
+      ? 'rgba(255, 255, 255, 0.8)'
+      : 'rgba(248, 113, 113, 0.95)';
+    ctx.lineWidth = 0.14;
     ctx.stroke();
+    ctx.fillStyle = preview.isLegalTarget
+      ? 'rgba(255, 255, 255, 0.12)'
+      : 'rgba(248, 113, 113, 0.18)';
+    ctx.fill();
 
-    // Cue ball tangent deflection line
-    ctx.beginPath();
-    ctx.moveTo(preview.ghostX, preview.ghostY);
-    ctx.lineTo(
-      preview.ghostX + preview.tangentDirX * 4.5,
-      preview.ghostY + preview.tangentDirY * 4.5
-    );
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
-    ctx.lineWidth = 0.11;
-    ctx.stroke();
+    // Object ball path & cue ball tangent line on legal contact
+    if (preview.hitBall) {
+      const hbx = preview.hitBall.x + ox;
+      const hby = preview.hitBall.y + oy;
+
+      // Object ball post-impact line
+      ctx.beginPath();
+      ctx.moveTo(hbx, hby);
+      ctx.lineTo(
+        hbx + preview.targetDirX * 8.5,
+        hby + preview.targetDirY * 8.5
+      );
+      ctx.strokeStyle = preview.isLegalTarget
+        ? 'rgba(56, 189, 248, 0.85)'
+        : 'rgba(248, 113, 113, 0.8)';
+      ctx.lineWidth = 0.16;
+      ctx.stroke();
+
+      // Cue ball tangent deflection line
+      ctx.beginPath();
+      ctx.moveTo(gx, gy);
+      ctx.lineTo(
+        gx + preview.tangentDirX * 4.5,
+        gy + preview.tangentDirY * 4.5
+      );
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+      ctx.lineWidth = 0.11;
+      ctx.stroke();
+    }
+  };
+
+  if (!isInfinite) {
+    ctx.save();
+    drawSingleAimGuide(0, 0);
+    ctx.restore();
+    return;
   }
 
+  const bdr = vp?.borderInches || RAIL_BORDER;
+  let minX = Math.min(preview.cueX, preview.ghostX) - BALL_RADIUS - 5;
+  let maxX = Math.max(preview.cueX, preview.ghostX) + BALL_RADIUS + 5;
+  let minY = Math.min(preview.cueY, preview.ghostY) - BALL_RADIUS - 5;
+  let maxY = Math.max(preview.cueY, preview.ghostY) + BALL_RADIUS + 5;
+  if (preview.hitBall) {
+    const tx = preview.hitBall.x + preview.targetDirX * 8.5;
+    const ty = preview.hitBall.y + preview.targetDirY * 8.5;
+    minX = Math.min(minX, preview.hitBall.x, tx);
+    maxX = Math.max(maxX, preview.hitBall.x, tx);
+    minY = Math.min(minY, preview.hitBall.y, ty);
+    maxY = Math.max(maxY, preview.hitBall.y, ty);
+  }
+
+  const gxMin = Math.floor((-bdr - maxX) / TABLE_LENGTH);
+  const gxMax = Math.ceil((TABLE_LENGTH + bdr - minX) / TABLE_LENGTH);
+  const gyMin = Math.floor((-bdr - maxY) / TABLE_WIDTH);
+  const gyMax = Math.ceil((TABLE_WIDTH + bdr - minY) / TABLE_WIDTH);
+
+  // Pass 1: Draw aim preview in the 8 surrounding reflection boards (slightly faded)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2);
+  ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+  ctx.clip('evenodd');
+  ctx.globalAlpha = 0.52;
+  for (let gx = gxMin; gx <= gxMax; gx++) {
+    for (let gy = gyMin; gy <= gyMax; gy++) {
+      drawSingleAimGuide(gx * TABLE_LENGTH, gy * TABLE_WIDTH);
+    }
+  }
+  ctx.restore();
+
+  // Pass 2: Draw wrapped aim preview on the main center board [0..100, 0..50] at full brightness
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+  ctx.clip();
+  for (let gx = gxMin; gx <= gxMax; gx++) {
+    for (let gy = gyMin; gy <= gyMax; gy++) {
+      drawSingleAimGuide(gx * TABLE_LENGTH, gy * TABLE_WIDTH);
+    }
+  }
   ctx.restore();
 }
 
 function drawCheatPreviewTrajectories(
   ctx: CanvasRenderingContext2D,
   cheatPreview: CheatPreview,
-  state?: GameState
+  state?: GameState,
+  vp?: TableViewport
 ): void {
-  ctx.save();
   const isInfinite = state ? hasModifier(state, 'infinite') : false;
+
+  if (!isInfinite) {
+    ctx.save();
+    for (const eb of cheatPreview.endBalls) {
+      if (!eb.moved || eb.path.length < 2) continue;
+
+      const isCue = eb.id === 0;
+      const isCueFoul = isCue && (eb.pocketedThisShot || cheatPreview.isFoul);
+      const baseColor = BALL_COLORS[eb.id] || '#FFFFFF';
+
+      ctx.beginPath();
+      ctx.moveTo(eb.path[0].x, eb.path[0].y);
+      for (let i = 1; i < eb.path.length; i++) {
+        const prev = eb.path[i - 1];
+        const cur = eb.path[i];
+        if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > 15) {
+          ctx.moveTo(cur.x, cur.y);
+        } else {
+          ctx.lineTo(cur.x, cur.y);
+        }
+      }
+
+      ctx.strokeStyle = isCueFoul
+        ? 'rgba(248, 113, 113, 0.82)'
+        : isCue
+        ? 'rgba(255, 255, 255, 0.65)'
+        : `${baseColor}BB`;
+      ctx.lineWidth = isCue ? 0.14 : 0.12;
+      ctx.setLineDash(isCue ? [0.45, 0.3] : [0.35, 0.28]);
+      ctx.stroke();
+
+      if (eb.pocketedThisShot && eb.pocketId !== null) {
+        const stdPk = POCKETS[eb.pocketId];
+        if (stdPk) {
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(stdPk.renderX, stdPk.renderY, stdPk.renderRadius * 0.92, 0, Math.PI * 2);
+          const isBadPocket = eb.id === 0 || (eb.id === 8 && cheatPreview.isFoul);
+          ctx.strokeStyle = isBadPocket ? '#F87171' : '#4ADE80';
+          ctx.lineWidth = 0.22;
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+    return;
+  }
+
+  // Infinite Mode: unwrap seam crossings into continuous polylines and draw in BOTH reflection border & main board
+  const bdr = vp?.borderInches || RAIL_BORDER;
+
+  interface UnwrappedSubPath {
+    points: { x: number; y: number }[];
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  }
+
+  const ballSubPaths: {
+    eb: (typeof cheatPreview.endBalls)[number];
+    subPaths: UnwrappedSubPath[];
+  }[] = [];
 
   for (const eb of cheatPreview.endBalls) {
     if (!eb.moved || eb.path.length < 2) continue;
 
-    const isCue = eb.id === 0;
-    const isCueFoul = isCue && (eb.pocketedThisShot || cheatPreview.isFoul);
-    const baseColor = BALL_COLORS[eb.id] || '#FFFFFF';
+    const subPaths: UnwrappedSubPath[] = [];
+    let curPts: { x: number; y: number }[] = [{ x: eb.path[0].x, y: eb.path[0].y }];
+    let minX = eb.path[0].x;
+    let maxX = eb.path[0].x;
+    let minY = eb.path[0].y;
+    let maxY = eb.path[0].y;
 
-    ctx.beginPath();
-    ctx.moveTo(eb.path[0].x, eb.path[0].y);
     for (let i = 1; i < eb.path.length; i++) {
-      const prev = eb.path[i - 1];
-      const cur = eb.path[i];
-      if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > 15) {
-        ctx.moveTo(cur.x, cur.y);
+      const prevRaw = eb.path[i - 1];
+      const curRaw = eb.path[i];
+      let dx = curRaw.x - prevRaw.x;
+      let dy = curRaw.y - prevRaw.y;
+
+      if (dx > TABLE_LENGTH * 0.5) dx -= TABLE_LENGTH;
+      else if (dx < -TABLE_LENGTH * 0.5) dx += TABLE_LENGTH;
+      if (dy > TABLE_WIDTH * 0.5) dy -= TABLE_WIDTH;
+      else if (dy < -TABLE_WIDTH * 0.5) dy += TABLE_WIDTH;
+
+      if (Math.hypot(dx, dy) > 15) {
+        // Portal jump discontinuity: start a new sub-path
+        if (curPts.length >= 2) {
+          subPaths.push({ points: curPts, minX, maxX, minY, maxY });
+        }
+        curPts = [{ x: curRaw.x, y: curRaw.y }];
+        minX = curRaw.x;
+        maxX = curRaw.x;
+        minY = curRaw.y;
+        maxY = curRaw.y;
       } else {
-        ctx.lineTo(cur.x, cur.y);
+        const lastUnwrapped = curPts[curPts.length - 1];
+        const nx = lastUnwrapped.x + dx;
+        const ny = lastUnwrapped.y + dy;
+        curPts.push({ x: nx, y: ny });
+        if (nx < minX) minX = nx;
+        if (nx > maxX) maxX = nx;
+        if (ny < minY) minY = ny;
+        if (ny > maxY) maxY = ny;
       }
     }
+    if (curPts.length >= 2) {
+      subPaths.push({ points: curPts, minX, maxX, minY, maxY });
+    }
+    ballSubPaths.push({ eb, subPaths });
+  }
 
-    ctx.strokeStyle = isCueFoul
-      ? 'rgba(248, 113, 113, 0.82)'
-      : isCue
-      ? 'rgba(255, 255, 255, 0.65)'
-      : `${baseColor}BB`;
-    ctx.lineWidth = isCue ? 0.14 : 0.12;
-    ctx.setLineDash(isCue ? [0.45, 0.3] : [0.35, 0.28]);
-    ctx.stroke();
+  const drawAllSubPaths = () => {
+    for (const { eb, subPaths } of ballSubPaths) {
+      const isCue = eb.id === 0;
+      const isCueFoul = isCue && (eb.pocketedThisShot || cheatPreview.isFoul);
+      const baseColor = BALL_COLORS[eb.id] || '#FFFFFF';
 
-    // Highlight pocket ring if pocketed on this shot
+      ctx.strokeStyle = isCueFoul
+        ? 'rgba(248, 113, 113, 0.82)'
+        : isCue
+        ? 'rgba(255, 255, 255, 0.65)'
+        : `${baseColor}BB`;
+      ctx.lineWidth = isCue ? 0.14 : 0.12;
+      ctx.setLineDash(isCue ? [0.45, 0.3] : [0.35, 0.28]);
+
+      for (const sp of subPaths) {
+        const gxMin = Math.floor((-bdr - sp.maxX) / TABLE_LENGTH);
+        const gxMax = Math.ceil((TABLE_LENGTH + bdr - sp.minX) / TABLE_LENGTH);
+        const gyMin = Math.floor((-bdr - sp.maxY) / TABLE_WIDTH);
+        const gyMax = Math.ceil((TABLE_WIDTH + bdr - sp.minY) / TABLE_WIDTH);
+
+        for (let gx = gxMin; gx <= gxMax; gx++) {
+          for (let gy = gyMin; gy <= gyMax; gy++) {
+            const ox = gx * TABLE_LENGTH;
+            const oy = gy * TABLE_WIDTH;
+            ctx.beginPath();
+            ctx.moveTo(sp.points[0].x + ox, sp.points[0].y + oy);
+            for (let i = 1; i < sp.points.length; i++) {
+              ctx.lineTo(sp.points[i].x + ox, sp.points[i].y + oy);
+            }
+            ctx.stroke();
+          }
+        }
+      }
+    }
+  };
+
+  // Pass 1: Reflection boards (faded)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2);
+  ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+  ctx.clip('evenodd');
+  ctx.globalAlpha = 0.48;
+  drawAllSubPaths();
+  ctx.restore();
+
+  // Pass 2: Main board [0..100, 0..50] (full brightness)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+  ctx.clip();
+  drawAllSubPaths();
+  ctx.restore();
+
+  // Highlight pocket ring if pocketed on this shot
+  ctx.save();
+  for (const eb of cheatPreview.endBalls) {
     if (eb.pocketedThisShot && eb.pocketId !== null) {
-      const infPk = isInfinite ? INFINITE_POCKETS[eb.pocketId] : null;
-      const stdPk = !isInfinite ? POCKETS[eb.pocketId] : null;
-      const rx = infPk ? infPk.x : stdPk ? stdPk.renderX : null;
-      const ry = infPk ? infPk.y : stdPk ? stdPk.renderY : null;
-      const rr = infPk ? infPk.renderRadius : stdPk ? stdPk.renderRadius : null;
-      if (rx !== null && ry !== null && rr !== null) {
+      const infPk = INFINITE_POCKETS[eb.pocketId];
+      if (infPk) {
         ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.arc(rx, ry, rr * 0.92, 0, Math.PI * 2);
+        ctx.arc(infPk.x, infPk.y, infPk.renderRadius * 0.92, 0, Math.PI * 2);
         const isBadPocket = eb.id === 0 || (eb.id === 8 && cheatPreview.isFoul);
         ctx.strokeStyle = isBadPocket ? '#F87171' : '#4ADE80';
         ctx.lineWidth = 0.22;
@@ -922,29 +1121,30 @@ function drawCheatPreviewTrajectories(
       }
     }
   }
-
   ctx.restore();
 }
 
 function drawCheatPreviewEndBalls(
   ctx: CanvasRenderingContext2D,
   cheatPreview: CheatPreview,
-  isPortrait: boolean
+  isPortrait: boolean,
+  isInfinite: boolean = false,
+  vp?: TableViewport
 ): void {
-  ctx.save();
-
-  for (const eb of cheatPreview.endBalls) {
-    if (!eb.moved) continue;
+  const drawSingleEndBall = (eb: (typeof cheatPreview.endBalls)[number], ox: number, oy: number, alphaScale: number) => {
+    const bx = eb.endX + ox;
+    const by = eb.endY + oy;
 
     ctx.save();
-    ctx.globalAlpha = eb.pocketedThisShot ? 0.82 : 0.68;
-    drawBall(ctx, eb.ballState, isPortrait);
+    ctx.globalAlpha = (eb.pocketedThisShot ? 0.82 : 0.68) * alphaScale;
+    drawBall(ctx, { ...eb.ballState, x: bx, y: by }, isPortrait);
     ctx.restore();
 
     // Crisp outline ring around the predicted final resting position
     ctx.save();
+    ctx.globalAlpha = alphaScale;
     ctx.beginPath();
-    ctx.arc(eb.endX, eb.endY, BALL_RADIUS + 0.1, 0, Math.PI * 2);
+    ctx.arc(bx, by, BALL_RADIUS + 0.1, 0, Math.PI * 2);
     const isCueFoul = eb.id === 0 && (eb.pocketedThisShot || cheatPreview.isFoul);
     ctx.strokeStyle = isCueFoul
       ? '#F87171'
@@ -957,8 +1157,69 @@ function drawCheatPreviewEndBalls(
     ctx.setLineDash([0.32, 0.22]);
     ctx.stroke();
     ctx.restore();
+  };
+
+  if (!isInfinite) {
+    ctx.save();
+    for (const eb of cheatPreview.endBalls) {
+      if (!eb.moved) continue;
+      drawSingleEndBall(eb, 0, 0, 1.0);
+    }
+    ctx.restore();
+    return;
   }
 
+  const bdr = vp?.borderInches || RAIL_BORDER;
+
+  // Pass 1: Reflection boards (faded)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2);
+  ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+  ctx.clip('evenodd');
+  for (const eb of cheatPreview.endBalls) {
+    if (!eb.moved) continue;
+    for (let gx = -1; gx <= 1; gx++) {
+      for (let gy = -1; gy <= 1; gy++) {
+        const bx = eb.endX + gx * TABLE_LENGTH;
+        const by = eb.endY + gy * TABLE_WIDTH;
+        if (
+          bx < -bdr - BALL_RADIUS - 0.5 ||
+          bx > TABLE_LENGTH + bdr + BALL_RADIUS + 0.5 ||
+          by < -bdr - BALL_RADIUS - 0.5 ||
+          by > TABLE_WIDTH + bdr + BALL_RADIUS + 0.5
+        ) {
+          continue;
+        }
+        drawSingleEndBall(eb, gx * TABLE_LENGTH, gy * TABLE_WIDTH, 0.48);
+      }
+    }
+  }
+  ctx.restore();
+
+  // Pass 2: Main board [0..100, 0..50] (full brightness, including seam-straddling ghost balls)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+  ctx.clip();
+  for (const eb of cheatPreview.endBalls) {
+    if (!eb.moved) continue;
+    for (let gx = -1; gx <= 1; gx++) {
+      for (let gy = -1; gy <= 1; gy++) {
+        const bx = eb.endX + gx * TABLE_LENGTH;
+        const by = eb.endY + gy * TABLE_WIDTH;
+        if (
+          bx + BALL_RADIUS + 0.2 < 0 ||
+          bx - BALL_RADIUS - 0.2 > TABLE_LENGTH ||
+          by + BALL_RADIUS + 0.2 < 0 ||
+          by - BALL_RADIUS - 0.2 > TABLE_WIDTH
+        ) {
+          continue;
+        }
+        drawSingleEndBall(eb, gx * TABLE_LENGTH, gy * TABLE_WIDTH, 1.0);
+      }
+    }
+  }
   ctx.restore();
 }
 

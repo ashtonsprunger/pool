@@ -1066,6 +1066,17 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
     expect(preview.hitBall).not.toBeNull();
     expect(preview.hitBall?.id).toBe(2);
     expect(preview.ghostX).toBeLessThan(0); // Ghost ball sits on the left mirrored preview board
+
+    // 3. Verify Infinite mode has only the 4 corner pockets, so a ball crossing (50, 0) wraps cleanly
+    const midSeamBall = createBall(3, 50.0, 2.0);
+    midSeamBall.vx = 0;
+    midSeamBall.vy = -60.0;
+    const midTelemetry = createInitialTelemetry();
+    for (let s = 0; s < 25; s++) {
+      stepPhysics([midSeamBall], midTelemetry, 1 / 240, 'infinite');
+    }
+    expect(midSeamBall.pocketed).toBe(false);
+    expect(midSeamBall.y).toBeGreaterThan(40.0);
   });
 
   it('supports mixing and matching any combination of Table Modifiers with Cheat mode', () => {
