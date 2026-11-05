@@ -687,6 +687,222 @@ body {
   background: var(--m3-on-primary);
 }
 
+/* Main Page & Active Rooms Hub */
+.main-hub-backdrop {
+  background: rgba(10, 14, 18, 0.88);
+  backdrop-filter: blur(8px);
+}
+
+.main-hub-sheet {
+  max-width: 440px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+.hub-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hub-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hub-title {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--m3-text);
+  letter-spacing: -0.01em;
+}
+
+.hub-subtitle {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--m3-text-muted);
+}
+
+.hub-resume-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 14px;
+}
+
+.rooms-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rooms-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rooms-section-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--m3-text-muted);
+}
+
+.rooms-count-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--m3-surface-highest);
+  color: var(--m3-text);
+}
+
+.active-rooms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.rooms-empty {
+  text-align: center;
+  padding: 16px 12px;
+  font-size: 0.78rem;
+  color: var(--m3-text-muted);
+  background: var(--m3-surface-high);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--m3-outline);
+}
+
+.room-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--m3-surface-high);
+  border: 1px solid var(--m3-outline);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.room-card:hover {
+  background: var(--m3-surface-highest);
+}
+
+.room-card.current-room {
+  border-color: var(--m3-primary);
+}
+
+.room-card.my-turn-room {
+  border-color: var(--m3-success);
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.25);
+}
+
+.room-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.room-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.room-card-players {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--m3-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-card-code {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--m3-surface-highest);
+  color: var(--m3-primary);
+}
+
+.room-card-mode {
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--m3-text-muted);
+}
+
+.room-card-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--m3-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-card-status.my-turn {
+  color: var(--m3-success);
+}
+
+.room-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.room-card-btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--m3-outline);
+  background: var(--m3-surface-highest);
+  color: var(--m3-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.room-card-btn.primary {
+  background: var(--m3-primary);
+  color: var(--m3-on-primary);
+  border-color: transparent;
+}
+
+.room-card-remove {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--m3-text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.room-card-remove:hover {
+  background: rgba(248, 113, 113, 0.16);
+  color: var(--m3-danger);
+}
+
 @media (max-width: 600px) {
   .hud-bar {
     flex-wrap: wrap;

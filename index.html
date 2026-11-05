@@ -112,17 +112,25 @@
         </div>
       </div>
 
-      <!-- Multiplayer & Game Modal -->
-      <div class="modal-backdrop hidden" id="room-modal">
-        <div class="m3-sheet" role="dialog" aria-label="Multiplayer Room">
-          <div class="sheet-section">
-            <div class="room-code-display" id="modal-room-status">Local Pass &amp; Play</div>
+      <!-- Main Page: Active Rooms & Game Hub -->
+      <div class="modal-backdrop main-hub-backdrop" id="room-modal">
+        <div class="m3-sheet main-hub-sheet" role="dialog" aria-label="Main Page & Active Rooms">
+          <div class="hub-header">
+            <div class="hub-title-group">
+              <span class="hub-title">8-Ball Pool</span>
+              <span class="hub-subtitle" id="modal-room-status">Select or create a game</span>
+            </div>
+            <button class="m3-btn m3-btn-tonal hub-resume-btn" id="close-modal-btn" type="button">
+              Table
+            </button>
+          </div>
 
+          <div class="sheet-section">
             <input
               type="text"
               id="player-name-input"
               class="m3-input m3-input-name"
-              placeholder="Your name (required)"
+              placeholder="Your name (required for multiplayer)"
               maxlength="16"
               autocomplete="nickname"
             />
@@ -130,7 +138,7 @@
             <label class="m3-select-row" for="game-mode-select">
               <div class="m3-switch-text">
                 <span class="m3-switch-title">Mode</span>
-                <span class="m3-switch-sub">Applies on new room or rack</span>
+                <span class="m3-switch-sub">Applies to new rooms &amp; racks</span>
               </div>
               <select id="game-mode-select" class="m3-select">
                 <option value="normal">Normal</option>
@@ -140,35 +148,45 @@
             </label>
 
             <div class="sheet-row">
-              <button class="m3-btn m3-btn-primary" id="copy-link-btn" type="button">
-                Invite / Copy Link
+              <button class="m3-btn m3-btn-primary" id="new-room-btn" type="button">
+                + New Room
               </button>
-              <button class="m3-btn m3-btn-tonal hidden" id="leave-room-btn" type="button">
-                Local Mode
+              <button class="m3-btn m3-btn-tonal" id="copy-link-btn" type="button">
+                Copy Invite Link
+              </button>
+            </div>
+
+            <div class="sheet-row">
+              <button class="m3-btn m3-btn-tonal" id="new-rack-btn" type="button">
+                New Rack
+              </button>
+              <button class="m3-btn m3-btn-tonal" id="leave-room-btn" type="button">
+                Local Pass &amp; Play
               </button>
             </div>
           </div>
-
-          <div class="sheet-divider"></div>
 
           <form class="sheet-row" id="join-room-form">
             <input
               type="text"
               id="join-code-input"
               class="m3-input"
-              placeholder="Room code"
+              placeholder="Enter room code"
               maxlength="8"
               autocomplete="off"
               autocapitalize="characters"
             />
-            <button class="m3-btn m3-btn-tonal" type="submit">Join</button>
+            <button class="m3-btn m3-btn-tonal" style="flex: 0 0 auto" type="submit">Join</button>
           </form>
 
           <div class="sheet-divider"></div>
 
-          <div class="sheet-row">
-            <button class="m3-btn m3-btn-tonal" id="new-rack-btn" type="button">New Rack</button>
-            <button class="m3-btn m3-btn-text" id="close-modal-btn" type="button">Close</button>
+          <div class="rooms-section">
+            <div class="rooms-section-header">
+              <span class="rooms-section-title">Active Rooms</span>
+              <span class="rooms-count-badge" id="rooms-count-badge">0</span>
+            </div>
+            <div class="active-rooms-list" id="active-rooms-list"></div>
           </div>
         </div>
       </div>

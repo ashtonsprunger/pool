@@ -21,6 +21,24 @@ const STORAGE_CLIENT_ID_KEY = 'pool8_client_id_v1';
 const STORAGE_PLAYER_NAME_KEY = 'pool8_player_name_v1';
 const STORAGE_ACTIVE_SESSION_KEY = 'pool8_active_session_v1';
 const STORAGE_ROOM_PREFIX = 'pool8_room_v1_';
+const STORAGE_ROOM_INDEX_KEY = 'pool8_room_index_v1';
+
+export interface RoomSummary {
+  roomCode: string;
+  hostClientId: string | null;
+  guestClientId: string | null;
+  hostName: string | null;
+  guestName: string | null;
+  mySeat: PlayerIndex | null;
+  gameMode: GameMode;
+  currentPlayer: PlayerIndex;
+  winner: PlayerIndex | null;
+  statusMessage: string;
+  shotCount: number;
+  updatedAt: number;
+  isCurrentRoom: boolean;
+  isLiveOnNetwork: boolean;
+}
 
 export interface PendingShotRecord {
   baseState: GameState;
@@ -227,12 +245,54 @@ export function loadPersistedSession(urlRoomCode: string | null): PersistedSessi
   };
 }
 
+export function getStoredRoomIndex(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_ROOM_INDEX_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((c): c is string => typeof c === 'string' && c.length >= 2);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return [];
+}
+
+function addRoomToStoredIndex(roomCode: string): void {
+  const code = roomCode.trim().toUpperCase();
+  if (!code) return;
+  try {
+    const list = getStoredRoomIndex();
+    if (!list.includes(code)) {
+      list.unshift(code);
+      localStorage.setItem(STORAGE_ROOM_INDEX_KEY, JSON.stringify(list.slice(0, 40)));
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function removePersistedRoom(roomCode: string): void {
+  const code = roomCode.trim().toUpperCase();
+  if (!code) return;
+  try {
+    localStorage.removeItem(STORAGE_ROOM_PREFIX + code);
+    const list = getStoredRoomIndex().filter((c) => c !== code);
+    localStorage.setItem(STORAGE_ROOM_INDEX_KEY, JSON.stringify(list));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 export function savePersistedSession(session: PersistedSession): void {
   try {
     const serialized = JSON.stringify(session);
     localStorage.setItem(STORAGE_ACTIVE_SESSION_KEY, serialized);
     if (session.roomCode) {
-      localStorage.setItem(STORAGE_ROOM_PREFIX + session.roomCode.toUpperCase(), serialized);
+      const code = session.roomCode.toUpperCase();
+      localStorage.setItem(STORAGE_ROOM_PREFIX + code, serialized);
+      addRoomToStoredIndex(code);
     }
   } catch {
     // Ignore quota errors
@@ -253,9 +313,12 @@ export class MultiplayerCoordinator {
 
   // Transports
   private bc: BroadcastChannel | null = null;
+  private lobbyBc: BroadcastChannel | null = null;
   private trysteroRoom: Room | null = null;
   private trysteroSend: ((data: NetPacket) => void) | null = null;
   private mqttClients: MqttClient[] = [];
+  private lobbyMqttClients: MqttClient[] = [];
+  private discoveredRooms = new Map<string, { session: PersistedSession; lastSeenAt: number }>();
   private peerLastSeenAt = 0;
   private heartbeatTimer: number | null = null;
 
@@ -270,6 +333,7 @@ export class MultiplayerCoordinator {
     this.callbacks = callbacks;
     this.session = loadPersistedSession(initialUrlRoom);
     this.applyMyNameToSeat();
+    this.initLobbyDiscovery();
 
     if (this.session.roomCode) {
       this.joinRoom(this.session.roomCode, false);
@@ -286,6 +350,219 @@ export class MultiplayerCoordinator {
   }
 
   private readonly disableNetwork: boolean;
+
+  private initLobbyDiscovery(): void {
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        this.lobbyBc = new BroadcastChannel('pool8_lobby_v1');
+        this.lobbyBc.onmessage = (ev) => {
+          const data = ev.data as { roomCode?: string; pkt?: NetPacket } | null;
+          if (data && typeof data.roomCode === 'string' && data.pkt) {
+            this.observeRoomPacket(data.roomCode, data.pkt);
+          }
+        };
+      } catch {
+        // Ignore if unsupported
+      }
+    }
+
+    if (!this.disableNetwork) {
+      const wildcardTopic = 'antigravity-pool8-v1/room/+';
+      for (const brokerUrl of MQTT_BROKERS) {
+        try {
+          const client = mqtt.connect(brokerUrl, {
+            keepalive: 30,
+            reconnectPeriod: 3000,
+            connectTimeout: 8000,
+          });
+          client.on('connect', () => {
+            client.subscribe(wildcardTopic, { qos: 0 });
+          });
+          client.on('message', (topic, payload) => {
+            try {
+              const parts = topic.split('/');
+              const roomCode = (parts[parts.length - 1] ?? '').trim().toUpperCase();
+              if (!roomCode) return;
+              const pkt = JSON.parse(payload.toString()) as NetPacket;
+              this.observeRoomPacket(roomCode, pkt);
+            } catch {
+              // Ignore malformed packets
+            }
+          });
+          this.lobbyMqttClients.push(client);
+        } catch {
+          // Ignore broker failure
+        }
+      }
+    }
+  }
+
+  public observeRoomPacket(rawRoomCode: string, pkt: NetPacket): void {
+    const code = rawRoomCode.trim().toUpperCase();
+    if (!code || !pkt || !pkt.msgId) return;
+
+    let packetState: GameState | null = null;
+    let hostClientId: string | null = null;
+    let guestClientId: string | null = null;
+    let hostName: string | null = null;
+    let guestName: string | null = null;
+
+    if (pkt.type === 'HELLO' || pkt.type === 'SYNC_STATE') {
+      packetState = pkt.state;
+      hostClientId = pkt.hostClientId;
+      guestClientId = pkt.guestClientId;
+      hostName = pkt.hostName ?? (pkt.senderId === pkt.hostClientId ? pkt.senderName ?? null : null);
+      guestName =
+        pkt.guestName ?? (pkt.senderId === pkt.guestClientId ? pkt.senderName ?? null : null);
+    } else if (pkt.type === 'SHOT_FIRED') {
+      packetState = pkt.settledState;
+    } else if (pkt.type === 'NEW_GAME') {
+      packetState = pkt.state;
+    }
+
+    if (!packetState) return;
+
+    const existingDiscovered = this.discoveredRooms.get(code)?.session;
+    const savedIndex = getStoredRoomIndex();
+    const isSavedLocally = savedIndex.includes(code);
+    const savedLocal = isSavedLocally ? loadPersistedSession(code) : null;
+    const base = existingDiscovered ?? savedLocal;
+
+    if (base && packetState.seq < base.state.seq) return;
+
+    const mergedHostId = hostClientId ?? base?.hostClientId ?? null;
+    const mergedGuestId = guestClientId ?? base?.guestClientId ?? null;
+    const mergedHostName = hostName ?? base?.hostName ?? null;
+    const mergedGuestName = guestName ?? base?.guestName ?? null;
+    const mySeat: PlayerIndex | null =
+      mergedHostId === this.clientId
+        ? 0
+        : mergedGuestId === this.clientId
+        ? 1
+        : base?.mySeat ?? null;
+
+    const updatedSession: PersistedSession = {
+      roomCode: code,
+      mySeat,
+      hostClientId: mergedHostId,
+      guestClientId: mergedGuestId,
+      hostName: mergedHostName,
+      guestName: mergedGuestName,
+      state: cloneGameState(packetState),
+      pendingShot: null,
+    };
+
+    this.discoveredRooms.set(code, {
+      session: updatedSession,
+      lastSeenAt: Date.now(),
+    });
+
+    // If this is one of the user's saved games (and not the currently active room), update its stored state
+    if (
+      code !== this.session.roomCode &&
+      (isSavedLocally || mySeat !== null) &&
+      (!savedLocal || packetState.seq >= savedLocal.state.seq)
+    ) {
+      try {
+        localStorage.setItem(STORAGE_ROOM_PREFIX + code, JSON.stringify(updatedSession));
+        addRoomToStoredIndex(code);
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    this.notifyConnection();
+  }
+
+  public getActiveRooms(): RoomSummary[] {
+    const now = Date.now();
+    const codes = new Set<string>(getStoredRoomIndex());
+    if (this.session.roomCode) {
+      codes.add(this.session.roomCode.toUpperCase());
+    }
+    for (const [code, info] of this.discoveredRooms.entries()) {
+      if (now - info.lastSeenAt < 10 * 60 * 1000) {
+        codes.add(code);
+      }
+    }
+
+    const summaries: RoomSummary[] = [];
+    for (const code of codes) {
+      const isCurrent = this.session.roomCode === code;
+      const discovered = this.discoveredRooms.get(code);
+      const isLive = Boolean(discovered && now - discovered.lastSeenAt < 35000);
+
+      let sess: PersistedSession | null = null;
+      if (isCurrent) {
+        sess = {
+          ...this.session,
+          state: this.getCleanAuthoritativeState(),
+        };
+      } else {
+        const fromStorage = loadPersistedSession(code);
+        if (fromStorage.roomCode === code && (fromStorage.hostClientId || discovered)) {
+          sess =
+            discovered && discovered.session.state.seq >= fromStorage.state.seq
+              ? discovered.session
+              : fromStorage;
+        } else if (discovered) {
+          sess = discovered.session;
+        }
+      }
+
+      if (!sess) continue;
+
+      const mySeat: PlayerIndex | null =
+        sess.hostClientId === this.clientId
+          ? 0
+          : sess.guestClientId === this.clientId
+          ? 1
+          : sess.mySeat;
+
+      summaries.push({
+        roomCode: code,
+        hostClientId: sess.hostClientId,
+        guestClientId: sess.guestClientId,
+        hostName: sess.hostName ?? null,
+        guestName: sess.guestName ?? null,
+        mySeat,
+        gameMode: getGameMode(sess.state),
+        currentPlayer: sess.state.currentPlayer,
+        winner: sess.state.winner,
+        statusMessage: sess.state.statusMessage,
+        shotCount: sess.state.shotCount,
+        updatedAt: sess.state.updatedAt || now,
+        isCurrentRoom: isCurrent,
+        isLiveOnNetwork: isLive || (isCurrent && this.isPeerConnected()),
+      });
+    }
+
+    summaries.sort((a, b) => {
+      const aMyTurn = a.winner === null && a.mySeat !== null && a.currentPlayer === a.mySeat ? 1 : 0;
+      const bMyTurn = b.winner === null && b.mySeat !== null && b.currentPlayer === b.mySeat ? 1 : 0;
+      if (aMyTurn !== bMyTurn) return bMyTurn - aMyTurn;
+
+      const aActive = a.winner === null ? 1 : 0;
+      const bActive = b.winner === null ? 1 : 0;
+      if (aActive !== bActive) return bActive - aActive;
+
+      return b.updatedAt - a.updatedAt;
+    });
+
+    return summaries;
+  }
+
+  public removeRoom(rawCode: string): void {
+    const code = rawCode.trim().toUpperCase();
+    if (!code) return;
+    removePersistedRoom(code);
+    this.discoveredRooms.delete(code);
+    if (this.session.roomCode === code) {
+      this.leaveRoomToSolo();
+    } else {
+      this.notifyConnection();
+    }
+  }
 
   private applyMyNameToSeat(): void {
     if (!this.myPlayerName) return;
@@ -399,6 +676,9 @@ export class MultiplayerCoordinator {
     this.applyMyNameToSeat();
     this.save();
     this.updateUrlRoomParam(code);
+    if (this.isReady) {
+      this.callbacks.onStateUpdated(this.session.state, 'reconnect');
+    }
 
     // 1. BroadcastChannel for instant local tab sync
     if (typeof BroadcastChannel !== 'undefined') {
@@ -661,6 +941,14 @@ export class MultiplayerCoordinator {
     }
 
     if (this.session.roomCode) {
+      if (this.lobbyBc) {
+        try {
+          this.lobbyBc.postMessage({ roomCode: this.session.roomCode, pkt });
+        } catch {
+          // Ignore
+        }
+      }
+      this.observeRoomPacket(this.session.roomCode, pkt);
       const topic = `antigravity-pool8-v1/room/${this.session.roomCode}`;
       const json = JSON.stringify(pkt);
       for (const client of this.mqttClients) {
@@ -964,6 +1252,22 @@ export class MultiplayerCoordinator {
   public dispose(): void {
     this.isReady = false;
     this.disconnectTransports();
+    if (this.lobbyBc) {
+      try {
+        this.lobbyBc.close();
+      } catch {
+        // Ignore
+      }
+      this.lobbyBc = null;
+    }
+    for (const c of this.lobbyMqttClients) {
+      try {
+        c.end(true);
+      } catch {
+        // Ignore
+      }
+    }
+    this.lobbyMqttClients = [];
   }
 
   private disconnectTransports(): void {

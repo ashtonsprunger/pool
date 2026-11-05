@@ -16,7 +16,7 @@ import {
   computeTableViewport,
   screenToTable,
 } from './game/viewport';
-import { MultiplayerCoordinator } from './net/sync';
+import { MultiplayerCoordinator, RoomSummary } from './net/sync';
 import { BALL_COLORS, BALL_RADIUS, FIXED_DT } from './physics/constants';
 import {
   CueStrikeParams,
@@ -80,12 +80,15 @@ const roomModal = document.getElementById('room-modal') as HTMLElement;
 const modalRoomStatus = document.getElementById('modal-room-status') as HTMLElement;
 const playerNameInput = document.getElementById('player-name-input') as HTMLInputElement;
 const gameModeSelect = document.getElementById('game-mode-select') as HTMLSelectElement;
+const newRoomBtn = document.getElementById('new-room-btn') as HTMLButtonElement;
 const copyLinkBtn = document.getElementById('copy-link-btn') as HTMLButtonElement;
 const leaveRoomBtn = document.getElementById('leave-room-btn') as HTMLButtonElement;
 const joinRoomForm = document.getElementById('join-room-form') as HTMLFormElement;
 const joinCodeInput = document.getElementById('join-code-input') as HTMLInputElement;
 const newRackBtn = document.getElementById('new-rack-btn') as HTMLButtonElement;
 const closeModalBtn = document.getElementById('close-modal-btn') as HTMLButtonElement;
+const roomsCountBadge = document.getElementById('rooms-count-badge') as HTMLElement;
+const activeRoomsList = document.getElementById('active-rooms-list') as HTMLElement;
 
 const nameModal = document.getElementById('name-modal') as HTMLElement;
 const nameModalForm = document.getElementById('name-modal-form') as HTMLFormElement;
@@ -122,6 +125,9 @@ let coordinator!: MultiplayerCoordinator;
 // Parse initial URL ?room=CODE
 const urlParams = new URLSearchParams(window.location.search);
 const initialRoomParam = urlParams.get('room');
+if (initialRoomParam) {
+  roomModal.classList.add('hidden');
+}
 
 coordinator = new MultiplayerCoordinator(initialRoomParam, {
   onStateUpdated: (newState) => {
@@ -278,6 +284,135 @@ function formatStatusWithPlayerNames(rawMessage: string, p1Label: string, p2Labe
     .replace(/\bPlayer 2\b/g, p2Label);
 }
 
+function formatModeTag(mode: GameMode): string {
+  if (mode === 'cheat') return 'Cheat';
+  if (mode === 'frictionless') return 'Frictionless';
+  return 'Normal';
+}
+
+function renderActiveRoomsList(): void {
+  const rooms: RoomSummary[] = coordinator.getActiveRooms();
+  roomsCountBadge.textContent = String(rooms.length);
+  activeRoomsList.innerHTML = '';
+
+  if (rooms.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'rooms-empty';
+    empty.textContent = 'No active rooms yet — create a new room or join with a code.';
+    activeRoomsList.appendChild(empty);
+    return;
+  }
+
+  const myName = coordinator.getMyPlayerName();
+
+  for (const r of rooms) {
+    const p1 = r.hostName || (r.mySeat === 0 && myName ? myName : 'Player 1');
+    const p2 =
+      r.guestName ||
+      (r.mySeat === 1 && myName ? myName : r.guestClientId ? 'Player 2' : 'Waiting...');
+    const isMyTurnInRoom =
+      r.winner === null && r.mySeat !== null && r.currentPlayer === r.mySeat;
+
+    const card = document.createElement('div');
+    card.className = 'room-card';
+    if (r.isCurrentRoom) card.classList.add('current-room');
+    if (isMyTurnInRoom) card.classList.add('my-turn-room');
+
+    const main = document.createElement('div');
+    main.className = 'room-card-main';
+
+    const top = document.createElement('div');
+    top.className = 'room-card-top';
+
+    const playersEl = document.createElement('span');
+    playersEl.className = 'room-card-players';
+    playersEl.textContent = `${p1} vs ${p2}`;
+
+    const codeEl = document.createElement('span');
+    codeEl.className = 'room-card-code';
+    codeEl.textContent = `#${r.roomCode}`;
+
+    const modeEl = document.createElement('span');
+    modeEl.className = 'room-card-mode';
+    modeEl.textContent = formatModeTag(r.gameMode);
+
+    top.appendChild(playersEl);
+    top.appendChild(codeEl);
+    top.appendChild(modeEl);
+
+    const statusEl = document.createElement('div');
+    statusEl.className = 'room-card-status';
+    if (isMyTurnInRoom) {
+      statusEl.classList.add('my-turn');
+    }
+
+    if (r.winner !== null) {
+      const winName = r.winner === 0 ? p1 : p2;
+      statusEl.textContent = `Finished · ${winName} won`;
+    } else if (isMyTurnInRoom) {
+      statusEl.textContent = 'Your Turn — Tap to play';
+    } else if (r.mySeat !== null) {
+      const oppName = r.mySeat === 0 ? p2 : p1;
+      statusEl.textContent = !r.guestClientId
+        ? 'Waiting for opponent to join'
+        : `${oppName}'s Turn`;
+    } else if (!r.guestClientId) {
+      statusEl.textContent = 'Open Seat — Tap to join';
+    } else {
+      statusEl.textContent = formatStatusWithPlayerNames(r.statusMessage, p1, p2);
+    }
+
+    main.appendChild(top);
+    main.appendChild(statusEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'room-card-actions';
+
+    const openBtn = document.createElement('button');
+    openBtn.type = 'button';
+    openBtn.className = isMyTurnInRoom || r.isCurrentRoom ? 'room-card-btn primary' : 'room-card-btn';
+    openBtn.textContent = r.isCurrentRoom ? 'Playing' : r.mySeat === null && !r.guestClientId ? 'Join' : 'Open';
+    openBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (!requireNameFromModalInput()) return;
+      if (coordinator.getRoomCode() !== r.roomCode) {
+        coordinator.joinRoom(r.roomCode, false);
+      }
+      roomModal.classList.add('hidden');
+      syncHud();
+    });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'room-card-remove';
+    removeBtn.title = 'Remove room';
+    removeBtn.setAttribute('aria-label', `Remove room ${r.roomCode}`);
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      coordinator.removeRoom(r.roomCode);
+      syncHud();
+    });
+
+    actions.appendChild(openBtn);
+    actions.appendChild(removeBtn);
+
+    card.appendChild(main);
+    card.appendChild(actions);
+
+    card.addEventListener('click', () => {
+      if (!requireNameFromModalInput()) return;
+      if (coordinator.getRoomCode() !== r.roomCode) {
+        coordinator.joinRoom(r.roomCode, false);
+      }
+      roomModal.classList.add('hidden');
+      syncHud();
+    });
+
+    activeRoomsList.appendChild(card);
+  }
+}
+
 function hasRequiredMultiplayerName(): boolean {
   if (!coordinator.getRoomCode()) return true;
   return coordinator.getMyPlayerName().trim().length > 0;
@@ -379,23 +514,30 @@ function syncHud(): void {
   }
   updatePowerUi(pullBackPower);
 
+  const allRooms = coordinator.getActiveRooms();
+  const otherMyTurnCount = allRooms.filter(
+    (r) => !r.isCurrentRoom && r.winner === null && r.mySeat !== null && r.currentPlayer === r.mySeat
+  ).length;
+  const turnBadgeSuffix = otherMyTurnCount > 0 ? ` (${otherMyTurnCount})` : '';
+
   if (!roomCode) {
-    connDot.className = 'conn-dot';
-    roomBtnLabel.textContent = `Multiplayer${modeSuffix}`;
-    modalRoomStatus.textContent = `Mode: Local Pass & Play${modeLabel}`;
-    leaveRoomBtn.classList.add('hidden');
+    connDot.className = otherMyTurnCount > 0 ? 'conn-dot waiting' : 'conn-dot';
+    roomBtnLabel.textContent = `Rooms${modeSuffix}${turnBadgeSuffix}`;
+    modalRoomStatus.textContent = `Local Pass & Play${modeLabel}`;
+    copyLinkBtn.textContent = 'Share New Room';
   } else {
     connDot.className = peerOnline ? 'conn-dot connected' : 'conn-dot waiting';
     const baseRoomLabel = isSpectator ? `Room ${roomCode} (View)` : `Room ${roomCode}`;
-    roomBtnLabel.textContent = `${baseRoomLabel}${modeSuffix}`;
+    roomBtnLabel.textContent = `${baseRoomLabel}${modeSuffix}${turnBadgeSuffix}`;
     const opponentName = mySeat === 0 ? guestName : mySeat === 1 ? hostName : null;
     modalRoomStatus.textContent = isSpectator
       ? `Room ${roomCode} — Spectating`
       : peerOnline
       ? `Room ${roomCode} — ${opponentName ? `vs ${opponentName}` : 'Opponent Connected'}`
       : `Room ${roomCode} — Waiting for Opponent`;
-    leaveRoomBtn.classList.remove('hidden');
   }
+
+  renderActiveRoomsList();
 
   // Winner overlay
   if (state.winner !== null && !isSimulating) {
@@ -448,16 +590,10 @@ canvas.addEventListener('pointerdown', (ev) => {
     return;
   }
 
-  // Otherwise aim the cue stick
+  // Otherwise aim the cue stick relatively from its current angle (never snap on pointerdown)
   isAimingOnCanvas = true;
   isDraggingCueBall = false;
   lastAimPointerAngle = Math.atan2(pt.y - cueBall.y, pt.x - cueBall.x);
-
-  // If user taps far from cue ball, snap aim toward the tapped point initially
-  if (distToCue > BALL_RADIUS * 2.5) {
-    aimAngle = lastAimPointerAngle;
-    maybeBroadcastAim();
-  }
 });
 
 canvas.addEventListener('pointermove', (ev) => {
@@ -476,17 +612,19 @@ canvas.addEventListener('pointermove', (ev) => {
     cueBall.y = valid.y;
     maybeBroadcastAim();
   } else if (isAimingOnCanvas) {
-    const curAngle = Math.atan2(pt.y - cueBall.y, pt.x - cueBall.x);
-    let delta = curAngle - lastAimPointerAngle;
-    while (delta > Math.PI) delta -= Math.PI * 2;
-    while (delta < -Math.PI) delta += Math.PI * 2;
-
-    // Fine-aim sensitivity scaling based on distance from cue ball
     const dist = Math.hypot(pt.x - cueBall.x, pt.y - cueBall.y);
-    const sensitivity = dist > 25 ? 0.65 : 1.0;
-    aimAngle += delta * sensitivity;
+    const curAngle = Math.atan2(pt.y - cueBall.y, pt.x - cueBall.x);
+    if (dist >= BALL_RADIUS * 1.5) {
+      let delta = curAngle - lastAimPointerAngle;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+
+      // Smooth relative rotation from current aimAngle
+      const sensitivity = dist > 25 ? 0.65 : 0.9;
+      aimAngle += delta * sensitivity;
+      maybeBroadcastAim();
+    }
     lastAimPointerAngle = curAngle;
-    maybeBroadcastAim();
   }
 });
 
@@ -788,24 +926,37 @@ closeModalBtn.addEventListener('click', () => {
   gameModeSelect.value = getGameMode(coordinator.getState());
 });
 
+async function copyInviteLinkForRoom(code: string, btn: HTMLButtonElement, defaultLabel: string): Promise<void> {
+  const shareUrl = `${window.location.origin}${window.location.pathname}?room=${code}`;
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    btn.textContent = `Copied (${code})!`;
+  } catch {
+    btn.textContent = `Room: ${code}`;
+  }
+  window.setTimeout(() => {
+    btn.textContent = defaultLabel;
+  }, 2200);
+}
+
+newRoomBtn.addEventListener('click', async () => {
+  if (!requireNameFromModalInput()) return;
+  const code = coordinator.createMultiplayerRoom(gameModeSelect.value as GameMode);
+  autoOrientAimTowardLegalTarget();
+  syncHud();
+  await copyInviteLinkForRoom(code, newRoomBtn, '+ New Room');
+});
+
 copyLinkBtn.addEventListener('click', async () => {
   if (!requireNameFromModalInput()) return;
 
   let code = coordinator.getRoomCode();
   if (!code) {
     code = coordinator.createMultiplayerRoom(gameModeSelect.value as GameMode);
-  }
-  const shareUrl = `${window.location.origin}${window.location.pathname}?room=${code}`;
-  try {
-    await navigator.clipboard.writeText(shareUrl);
-    copyLinkBtn.textContent = `Copied (${code})!`;
-  } catch {
-    copyLinkBtn.textContent = `Room: ${code}`;
+    autoOrientAimTowardLegalTarget();
   }
   syncHud();
-  window.setTimeout(() => {
-    copyLinkBtn.textContent = 'Invite / Copy Link';
-  }, 2200);
+  await copyInviteLinkForRoom(code, copyLinkBtn, 'Copy Invite Link');
 });
 
 leaveRoomBtn.addEventListener('click', () => {

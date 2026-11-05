@@ -812,6 +812,7 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
       // Put guest in the same room with its own initial rack before syncing with host
       guest.joinRoom(code, true);
       guest.getState().rackSeed = host.getState().rackSeed + 999;
+      guestStateUpdateCount = 0;
 
       // Initial room sync: Guest adopts Host's rack at seq=0 (1st state update)
       guest.handlePacket({
@@ -920,6 +921,58 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
     } finally {
       host.dispose();
       guest.dispose();
+    }
+  });
+
+  it('tracks multiple active rooms simultaneously and switches between them cleanly', () => {
+    const store = new Map<string, string>();
+    (globalThis as unknown as { localStorage: Storage }).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => store.clear(),
+      key: () => null,
+      length: 0,
+    };
+
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+
+    const player = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'MultiRoomPlayer',
+      disableNetwork: true,
+      playerName: 'Ashton',
+    });
+
+    try {
+      const room1 = player.createMultiplayerRoom('normal');
+      const room2 = player.createMultiplayerRoom('cheat');
+      const room3 = player.createMultiplayerRoom('frictionless');
+
+      const active = player.getActiveRooms();
+      const codes = active.map((r) => r.roomCode);
+      expect(codes).toContain(room1);
+      expect(codes).toContain(room2);
+      expect(codes).toContain(room3);
+
+      // Switch back to room2 and verify its mode and state are restored
+      player.joinRoom(room2, false);
+      expect(player.getRoomCode()).toBe(room2);
+      expect(getGameMode(player.getState())).toBe('cheat');
+
+      // Remove room1 and verify it is removed from the active list
+      player.removeRoom(room1);
+      expect(player.getActiveRooms().map((r) => r.roomCode)).not.toContain(room1);
+    } finally {
+      player.dispose();
     }
   });
 });
