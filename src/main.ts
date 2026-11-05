@@ -80,6 +80,7 @@ const roomModal = document.getElementById('room-modal') as HTMLElement;
 const modalRoomStatus = document.getElementById('modal-room-status') as HTMLElement;
 const playerNameInput = document.getElementById('player-name-input') as HTMLInputElement;
 const gameModeSelect = document.getElementById('game-mode-select') as HTMLSelectElement;
+const secretCheatOption = document.getElementById('secret-cheat-option') as HTMLOptionElement;
 const newRoomBtn = document.getElementById('new-room-btn') as HTMLButtonElement;
 const copyLinkBtn = document.getElementById('copy-link-btn') as HTMLButtonElement;
 const leaveRoomBtn = document.getElementById('leave-room-btn') as HTMLButtonElement;
@@ -121,7 +122,50 @@ let cachedCheatKey = '';
 let cachedCheatPreview: CheatPreview | null = null;
 let lastOrientedSeq = -1;
 let lastOrientedRackSeed = -1;
+const STORAGE_SECRET_CHEAT_KEY = 'pool8_secret_cheat_v1';
+let secretCheatForAshton = false;
+try {
+  secretCheatForAshton = localStorage.getItem(STORAGE_SECRET_CHEAT_KEY) === '1';
+} catch {
+  // Ignore storage errors
+}
 let coordinator!: MultiplayerCoordinator;
+
+function isPlayerAshton(): boolean {
+  const nameFromInput = playerNameInput ? playerNameInput.value.trim() : '';
+  const nameFromCoord = coordinator ? coordinator.getMyPlayerName().trim() : '';
+  const effective = (nameFromInput || nameFromCoord).toLowerCase();
+  return effective === 'ashton';
+}
+
+function setSecretCheatForAshton(enabled: boolean): void {
+  secretCheatForAshton = enabled;
+  try {
+    if (enabled) {
+      localStorage.setItem(STORAGE_SECRET_CHEAT_KEY, '1');
+    } else {
+      localStorage.removeItem(STORAGE_SECRET_CHEAT_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function isLocalCheatActive(state: GameState): boolean {
+  if (getGameMode(state) === 'cheat') return true;
+  return secretCheatForAshton && isPlayerAshton();
+}
+
+function resolveSelectedNetworkMode(): GameMode {
+  const val = gameModeSelect.value;
+  if (val === 'secret_cheat' && isPlayerAshton()) {
+    setSecretCheatForAshton(true);
+    return 'normal';
+  }
+  setSecretCheatForAshton(false);
+  if (val === 'cheat' || val === 'frictionless') return val;
+  return 'normal';
+}
 
 // Parse initial URL ?room=CODE
 const urlParams = new URLSearchParams(window.location.search);
@@ -206,11 +250,12 @@ resizeCanvas();
  */
 function autoOrientAimTowardLegalTarget(): void {
   const state = coordinator.getState();
+  const isCheat = isLocalCheatActive(state);
   lastOrientedSeq = state.seq;
   lastOrientedRackSeed = state.rackSeed;
-  if (state.cheatMode && pullBackPower < 0.05) {
+  if (isCheat && pullBackPower < 0.05) {
     pullBackPower = state.isBreakShot ? 0.72 : 0.42;
-  } else if (!state.cheatMode) {
+  } else if (!isCheat) {
     pullBackPower = 0;
   }
   updatePowerUi(pullBackPower);
@@ -494,7 +539,14 @@ function syncHud(): void {
 
   // Room button & Game Mode UI state
   const currentMode = getGameMode(state);
-  const isCheat = currentMode === 'cheat';
+  const ashton = isPlayerAshton();
+  secretCheatOption.classList.toggle('hidden', !ashton);
+  secretCheatOption.disabled = !ashton;
+  if (!ashton && gameModeSelect.value === 'secret_cheat') {
+    gameModeSelect.value = currentMode;
+  }
+
+  const isCheat = isLocalCheatActive(state);
   const modeSuffix =
     currentMode === 'cheat'
       ? ' · Cheat'
@@ -509,12 +561,15 @@ function syncHud(): void {
       : '';
 
   if (roomModal.classList.contains('hidden')) {
-    gameModeSelect.value = currentMode;
+    gameModeSelect.value =
+      secretCheatForAshton && ashton && currentMode === 'normal' ? 'secret_cheat' : currentMode;
   }
   fineAimWrap.classList.toggle('hidden', !isCheat);
   shootBtn.classList.toggle('hidden', !isCheat);
   if (isCheat && pullBackPower < 0.05 && !isSimulating) {
     pullBackPower = state.isBreakShot ? 0.72 : 0.42;
+  } else if (!isCheat && !isPullingPower && !isSimulating) {
+    pullBackPower = 0;
   }
   updatePowerUi(pullBackPower);
 
@@ -564,9 +619,13 @@ function maybeBroadcastAim(): void {
   const now = performance.now();
   if (now - lastAimBroadcastAt < 60) return;
   lastAimBroadcastAt = now;
-  const cueBall = coordinator.getState().balls.find((b) => b.id === 0);
+  const state = coordinator.getState();
+  const cueBall = state.balls.find((b) => b.id === 0);
   if (!cueBall) return;
-  coordinator.broadcastAim(aimAngle, pullBackPower, spinX, spinY, cueBall.x, cueBall.y);
+  // In Secret Cheat mode, keep broadcasted power at 0 while aiming so opponent sees normal aiming
+  const isSecretOnly = secretCheatForAshton && isPlayerAshton() && getGameMode(state) !== 'cheat';
+  const broadcastPower = isSecretOnly && !isPullingPower ? 0 : pullBackPower;
+  coordinator.broadcastAim(aimAngle, broadcastPower, spinX, spinY, cueBall.x, cueBall.y);
 }
 
 // Canvas Pointer Events (Aiming & Ball-in-Hand Placement)
@@ -648,7 +707,7 @@ canvas.addEventListener('pointercancel', endCanvasPointer);
 
 // Power Slider Events (Pull-back to Shoot in normal mode; Set Power in Cheat Mode)
 function updatePowerUi(power: number): void {
-  const isCheat = coordinator ? Boolean(coordinator.getState().cheatMode) : false;
+  const isCheat = coordinator ? isLocalCheatActive(coordinator.getState()) : false;
   const pct = Math.round(power * 100);
   powerFill.style.width = `${pct}%`;
   const trackWidth = powerTrack.clientWidth || 260;
@@ -674,7 +733,8 @@ powerTrack.addEventListener('pointerdown', (ev) => {
   isPullingPower = true;
   powerTrack.setPointerCapture(ev.pointerId);
   const rawPower = computePowerFromPointer(ev.clientX);
-  pullBackPower = state.cheatMode ? clamp(rawPower, 0.05, 1.0) : rawPower;
+  const isCheat = isLocalCheatActive(state);
+  pullBackPower = isCheat ? clamp(rawPower, 0.05, 1.0) : rawPower;
   updatePowerUi(pullBackPower);
   maybeBroadcastAim();
 });
@@ -683,7 +743,8 @@ powerTrack.addEventListener('pointermove', (ev) => {
   if (!isPullingPower) return;
   const state = coordinator.getState();
   const rawPower = computePowerFromPointer(ev.clientX);
-  pullBackPower = state.cheatMode ? clamp(rawPower, 0.05, 1.0) : rawPower;
+  const isCheat = isLocalCheatActive(state);
+  pullBackPower = isCheat ? clamp(rawPower, 0.05, 1.0) : rawPower;
   updatePowerUi(pullBackPower);
   maybeBroadcastAim();
 });
@@ -694,7 +755,7 @@ const finishPowerPull = () => {
   const state = coordinator.getState();
 
   // In Cheat Mode, releasing the power slider keeps the selected power; player taps Shoot to fire
-  if (state.cheatMode) {
+  if (isLocalCheatActive(state)) {
     pullBackPower = clamp(pullBackPower, 0.05, 1.0);
     updatePowerUi(pullBackPower);
     maybeBroadcastAim();
@@ -721,7 +782,7 @@ powerTrack.addEventListener('pointerup', finishPowerPull);
 powerTrack.addEventListener('pointercancel', () => {
   isPullingPower = false;
   const state = coordinator.getState();
-  if (!state.cheatMode) {
+  if (!isLocalCheatActive(state)) {
     pullBackPower = 0;
   }
   updatePowerUi(pullBackPower);
@@ -890,6 +951,19 @@ playerNameInput.addEventListener('input', () => {
   if (playerNameInput.value.trim().length > 0) {
     playerNameInput.classList.remove('input-error');
   }
+  const ashton = isPlayerAshton();
+  secretCheatOption.classList.toggle('hidden', !ashton);
+  secretCheatOption.disabled = !ashton;
+});
+
+gameModeSelect.addEventListener('change', () => {
+  if (gameModeSelect.value === 'secret_cheat' && isPlayerAshton()) {
+    setSecretCheatForAshton(true);
+    syncHud();
+  } else if (secretCheatForAshton) {
+    setSecretCheatForAshton(false);
+    syncHud();
+  }
 });
 
 playerNameInput.addEventListener('change', () => {
@@ -917,7 +991,11 @@ nameModalForm.addEventListener('submit', (ev) => {
 });
 
 roomBtn.addEventListener('click', () => {
-  gameModeSelect.value = getGameMode(coordinator.getState());
+  const currentMode = getGameMode(coordinator.getState());
+  gameModeSelect.value =
+    secretCheatForAshton && isPlayerAshton() && currentMode === 'normal'
+      ? 'secret_cheat'
+      : currentMode;
   syncHud();
   roomModal.classList.remove('hidden');
   if (!coordinator.getMyPlayerName()) {
@@ -930,7 +1008,12 @@ closeModalBtn.addEventListener('click', () => {
     if (!requireNameFromModalInput()) return;
   }
   roomModal.classList.add('hidden');
-  gameModeSelect.value = getGameMode(coordinator.getState());
+  const currentMode = getGameMode(coordinator.getState());
+  gameModeSelect.value =
+    secretCheatForAshton && isPlayerAshton() && currentMode === 'normal'
+      ? 'secret_cheat'
+      : currentMode;
+  syncHud();
 });
 
 async function copyInviteLinkForRoom(code: string, btn: HTMLButtonElement, defaultLabel: string): Promise<void> {
@@ -948,7 +1031,7 @@ async function copyInviteLinkForRoom(code: string, btn: HTMLButtonElement, defau
 
 newRoomBtn.addEventListener('click', async () => {
   if (!requireNameFromModalInput()) return;
-  const code = coordinator.createMultiplayerRoom(gameModeSelect.value as GameMode);
+  const code = coordinator.createMultiplayerRoom(resolveSelectedNetworkMode());
   autoOrientAimTowardLegalTarget();
   syncHud();
   await copyInviteLinkForRoom(code, newRoomBtn, '+ New Room');
@@ -959,7 +1042,7 @@ copyLinkBtn.addEventListener('click', async () => {
 
   let code = coordinator.getRoomCode();
   if (!code) {
-    code = coordinator.createMultiplayerRoom(gameModeSelect.value as GameMode);
+    code = coordinator.createMultiplayerRoom(resolveSelectedNetworkMode());
     autoOrientAimTowardLegalTarget();
   }
   syncHud();
@@ -988,7 +1071,7 @@ joinRoomForm.addEventListener('submit', (ev) => {
 const handleStartNewRack = () => {
   isSimulating = false;
   pendingSettledStateFromRemote = null;
-  coordinator.startNewGame(gameModeSelect.value as GameMode);
+  coordinator.startNewGame(resolveSelectedNetworkMode());
   autoOrientAimTowardLegalTarget();
   roomModal.classList.add('hidden');
   syncHud();
@@ -1068,7 +1151,7 @@ function animate(now: number): void {
   }
 
   const showAim = !isSimulating && state.winner === null;
-  const isCheat = currentMode === 'cheat';
+  const isCheat = isLocalCheatActive(state);
   const aimPreview = showAim && !isCheat ? computeAimPreview(state, aimAngle) : null;
   const cheatPreview = showAim && isCheat ? getMemoizedCheatPreview(state) : null;
 

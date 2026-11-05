@@ -830,8 +830,10 @@ export interface CheatPreview {
 export function computeCheatPreview(
   state: GameState,
   strike: CueStrikeParams,
-  maxSteps: number = 240 * 25
+  maxSteps?: number
 ): CheatPreview {
+  const isFrictionless = getGameMode(state) === 'frictionless';
+  const effectiveMaxSteps = maxSteps ?? (isFrictionless ? 240 * 35 : 240 * 25);
   const simBalls = cloneBalls(state.balls);
   const startPositions = new Map<number, { x: number; y: number; wasPocketed: boolean }>();
   const paths = new Map<number, BallTrajectoryPoint[]>();
@@ -851,8 +853,8 @@ export function computeCheatPreview(
   const telemetry = createInitialTelemetry();
   let steps = 0;
 
-  while (steps < maxSteps && areBallsMoving(simBalls)) {
-    stepPhysics(simBalls, telemetry, FIXED_DT);
+  while (steps < effectiveMaxSteps && areBallsMoving(simBalls)) {
+    stepPhysics(simBalls, telemetry, FIXED_DT, isFrictionless);
     steps++;
 
     if (steps % 4 === 0) {
@@ -874,7 +876,7 @@ export function computeCheatPreview(
     }
   }
 
-  if (steps >= maxSteps) {
+  if (steps >= effectiveMaxSteps) {
     for (const b of simBalls) {
       b.vx = 0;
       b.vy = 0;
