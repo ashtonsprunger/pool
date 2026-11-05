@@ -363,27 +363,6 @@ export class MultiplayerCoordinator {
     return code;
   }
 
-  public setCheatMode(cheatMode: boolean): void {
-    if (Boolean(this.session.state.cheatMode) === cheatMode) return;
-    this.session.state.cheatMode = cheatMode;
-    this.session.state.seq += 1;
-    this.session.state.updatedAt = Date.now();
-    this.save();
-    if (this.session.roomCode && this.session.hostClientId) {
-      this.broadcast({
-        type: 'SYNC_STATE',
-        msgId: generateId(),
-        senderId: this.clientId,
-        senderName: this.myPlayerName || null,
-        hostClientId: this.session.hostClientId,
-        guestClientId: this.session.guestClientId,
-        hostName: this.session.hostName ?? null,
-        guestName: this.session.guestName ?? null,
-        state: cloneGameState(this.session.state),
-      });
-    }
-  }
-
   public joinRoom(rawCode: string, resetIfNew: boolean = false): void {
     const code = rawCode.trim().toUpperCase();
     if (!code) return;

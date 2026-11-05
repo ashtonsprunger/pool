@@ -346,7 +346,9 @@ function syncHud(): void {
 
   // Room button & Cheat Mode UI state
   const isCheat = Boolean(state.cheatMode);
-  cheatModeToggle.checked = isCheat;
+  if (roomModal.classList.contains('hidden')) {
+    cheatModeToggle.checked = isCheat;
+  }
   fineAimWrap.classList.toggle('hidden', !isCheat);
   shootBtn.classList.toggle('hidden', !isCheat);
   if (isCheat && pullBackPower < 0.05 && !isSimulating) {
@@ -748,6 +750,7 @@ nameModalForm.addEventListener('submit', (ev) => {
 });
 
 roomBtn.addEventListener('click', () => {
+  cheatModeToggle.checked = Boolean(coordinator.getState().cheatMode);
   syncHud();
   roomModal.classList.remove('hidden');
   if (!coordinator.getMyPlayerName()) {
@@ -760,12 +763,7 @@ closeModalBtn.addEventListener('click', () => {
     if (!requireNameFromModalInput()) return;
   }
   roomModal.classList.add('hidden');
-});
-
-cheatModeToggle.addEventListener('change', () => {
-  coordinator.setCheatMode(cheatModeToggle.checked);
-  autoOrientAimTowardLegalTarget();
-  syncHud();
+  cheatModeToggle.checked = Boolean(coordinator.getState().cheatMode);
 });
 
 copyLinkBtn.addEventListener('click', async () => {
@@ -774,8 +772,6 @@ copyLinkBtn.addEventListener('click', async () => {
   let code = coordinator.getRoomCode();
   if (!code) {
     code = coordinator.createMultiplayerRoom(cheatModeToggle.checked);
-  } else {
-    coordinator.setCheatMode(cheatModeToggle.checked);
   }
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${code}`;
   try {
