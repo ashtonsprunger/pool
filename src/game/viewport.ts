@@ -8,10 +8,12 @@ export interface TableViewport {
   isPortrait: boolean;  // True when rotated 90 deg CCW for portrait screens
   originX: number;      // Screen CSS X of table (0, 0)
   originY: number;      // Screen CSS Y of table (0, 0)
+  borderInches: number; // Border margin around (0..100, 0..50) in table inches
 }
 
 export const TOTAL_OUTER_LENGTH = TABLE_LENGTH + RAIL_BORDER * 2; // 110.5 in
 export const TOTAL_OUTER_WIDTH = TABLE_WIDTH + RAIL_BORDER * 2;   // 60.5 in
+export const INFINITE_PREVIEW_BORDER = 14.0; // 14 in preview of adjacent mirrored tables
 
 /**
  * Computes the optimal responsive viewport for a given container size (in CSS pixels).
@@ -21,22 +23,25 @@ export const TOTAL_OUTER_WIDTH = TABLE_WIDTH + RAIL_BORDER * 2;   // 60.5 in
 export function computeTableViewport(
   availWidth: number,
   availHeight: number,
-  cuePullbackMarginInches: number = 3.5
+  cuePullbackMarginInches: number = 3.5,
+  borderInches: number = RAIL_BORDER
 ): TableViewport {
   const safeW = Math.max(200, availWidth);
   const safeH = Math.max(200, availHeight);
 
   const isPortrait = safeH > safeW * 1.08;
 
-  const spanLong = TOTAL_OUTER_LENGTH + cuePullbackMarginInches * 2;
-  const spanShort = TOTAL_OUTER_WIDTH + cuePullbackMarginInches * 2;
+  const outerLength = TABLE_LENGTH + borderInches * 2;
+  const outerWidth = TABLE_WIDTH + borderInches * 2;
+  const spanLong = outerLength + cuePullbackMarginInches * 2;
+  const spanShort = outerWidth + cuePullbackMarginInches * 2;
 
   if (!isPortrait) {
     const scale = Math.min(safeW / spanLong, safeH / spanShort);
-    const widthCss = Math.round( TOTAL_OUTER_LENGTH * scale );
-    const heightCss = Math.round( TOTAL_OUTER_WIDTH * scale );
-    const originX = RAIL_BORDER * scale;
-    const originY = RAIL_BORDER * scale;
+    const widthCss = Math.round(outerLength * scale);
+    const heightCss = Math.round(outerWidth * scale);
+    const originX = borderInches * scale;
+    const originY = borderInches * scale;
     return {
       widthCss,
       heightCss,
@@ -44,15 +49,16 @@ export function computeTableViewport(
       isPortrait: false,
       originX,
       originY,
+      borderInches,
     };
   } else {
     const scale = Math.min(safeW / spanShort, safeH / spanLong);
-    const widthCss = Math.round( TOTAL_OUTER_WIDTH * scale );
-    const heightCss = Math.round( TOTAL_OUTER_LENGTH * scale );
+    const widthCss = Math.round(outerWidth * scale);
+    const heightCss = Math.round(outerLength * scale);
     // In 90 deg CCW rotation:
-    // Table (0, 0) is at bottom-left of playing surface: sx = RAIL_BORDER * scale, sy = (RAIL_BORDER + TABLE_LENGTH) * scale
-    const originX = RAIL_BORDER * scale;
-    const originY = (RAIL_BORDER + TABLE_LENGTH) * scale;
+    // Table (0, 0) is at bottom-left of playing surface: sx = borderInches * scale, sy = (borderInches + TABLE_LENGTH) * scale
+    const originX = borderInches * scale;
+    const originY = (borderInches + TABLE_LENGTH) * scale;
     return {
       widthCss,
       heightCss,
@@ -60,6 +66,7 @@ export function computeTableViewport(
       isPortrait: true,
       originX,
       originY,
+      borderInches,
     };
   }
 }

@@ -45,7 +45,23 @@ export type PhysicsMode =
   | 'frictionless'
   | 'portals'
   | 'pinball'
-  | 'blackhole';
+  | 'blackhole'
+  | 'infinite';
+
+export const INFINITE_POCKETS: readonly {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  renderRadius: number;
+}[] = [
+  { id: 0, x: 0.0, y: 0.0, radius: 2.15, renderRadius: 2.35 },
+  { id: 1, x: 50.0, y: 0.0, radius: 2.15, renderRadius: 2.35 },
+  { id: 2, x: 100.0, y: 0.0, radius: 2.15, renderRadius: 2.35 },
+  { id: 3, x: 0.0, y: 50.0, radius: 2.15, renderRadius: 2.35 },
+  { id: 4, x: 50.0, y: 50.0, radius: 2.15, renderRadius: 2.35 },
+  { id: 5, x: 100.0, y: 50.0, radius: 2.15, renderRadius: 2.35 },
+];
 
 export interface ShotTelemetry {
   firstContactBallId: number | null;
@@ -183,15 +199,42 @@ function integrateQuaternion(b: BallState, dt: number): void {
  * In frictionless mode, cloth friction is completely removed so balls glide without deceleration.
  * In blackhole mode, pockets exert a gravitational pull on moving balls within their gravity well.
  */
-function stepBallMotion(b: BallState, dt: number, mode: PhysicsMode = 'normal'): void {
+function stepBallMotion(
+  b: BallState,
+  dt: number,
+  mode: PhysicsMode = 'normal',
+  telemetry?: ShotTelemetry
+): void {
   if (b.pocketed) return;
 
   const frictionless = mode === 'frictionless';
   const blackhole = mode === 'blackhole';
+  const infinite = mode === 'infinite';
 
   // 1. Advance position
   b.x += b.vx * dt;
   b.y += b.vy * dt;
+
+  // Infinite Mode: wrap ball coordinates across the [0, 100) x [0, 50) torus seams
+  if (infinite) {
+    let wrapped = false;
+    if (b.x < 0 || b.x >= TABLE_LENGTH) {
+      b.x = ((b.x % TABLE_LENGTH) + TABLE_LENGTH) % TABLE_LENGTH;
+      wrapped = true;
+    }
+    if (b.y < 0 || b.y >= TABLE_WIDTH) {
+      b.y = ((b.y % TABLE_WIDTH) + TABLE_WIDTH) % TABLE_WIDTH;
+      wrapped = true;
+    }
+    if (wrapped && telemetry) {
+      if (telemetry.firstContactBallId !== null) {
+        telemetry.cushionContactsAfterFirstHit++;
+      }
+      if (b.id !== 0) {
+        telemetry.objectBallsDrivenToCushion.add(b.id);
+      }
+    }
+  }
 
   // Black Hole Mode: apply pocket gravity well acceleration to moving balls
   let insideEventHorizon = false;
@@ -311,6 +354,35 @@ function checkPockets(
   telemetry: ShotTelemetry,
   mode: PhysicsMode = 'normal'
 ): void {
+  if (mode === 'infinite') {
+    for (let i = 0; i < balls.length; i++) {
+      const b = balls[i];
+      if (b.pocketed) continue;
+
+      for (let p = 0; p < INFINITE_POCKETS.length; p++) {
+        const pk = INFINITE_POCKETS[p];
+        const dx = b.x - pk.x;
+        const dy = b.y - pk.y;
+        if (dx * dx + dy * dy <= pk.radius * pk.radius) {
+          b.pocketed = true;
+          b.pocketId = pk.id;
+          b.vx = 0;
+          b.vy = 0;
+          b.wx = 0;
+          b.wy = 0;
+          b.wz = 0;
+          if (b.id === 0) {
+            telemetry.cueBallPocketed = true;
+          } else if (!telemetry.pocketedBallIds.includes(b.id)) {
+            telemetry.pocketedBallIds.push(b.id);
+          }
+          break;
+        }
+      }
+    }
+    return;
+  }
+
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
     if (b.pocketed) continue;
@@ -392,6 +464,11 @@ function resolveCushionCollisions(
   telemetry: ShotTelemetry,
   mode: PhysicsMode = 'normal'
 ): void {
+  if (mode === 'infinite') {
+    // No walls or jaws in Infinite mode — all edges wrap seamlessly
+    return;
+  }
+
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
     if (b.pocketed) continue;
@@ -563,6 +640,7 @@ function resolveBallBallCollisions(
   mode: PhysicsMode = 'normal'
 ): void {
   const frictionless = mode === 'frictionless';
+  const infinite = mode === 'infinite';
   const n = balls.length;
   for (let pass = 0; pass < 3; pass++) {
     let anyCollision = false;
@@ -575,8 +653,14 @@ function resolveBallBallCollisions(
         const b = balls[j];
         if (b.pocketed) continue;
 
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        if (infinite) {
+          if (dx > TABLE_LENGTH * 0.5) dx -= TABLE_LENGTH;
+          else if (dx < -TABLE_LENGTH * 0.5) dx += TABLE_LENGTH;
+          if (dy > TABLE_WIDTH * 0.5) dy -= TABLE_WIDTH;
+          else if (dy < -TABLE_WIDTH * 0.5) dy += TABLE_WIDTH;
+        }
         const distSq = dx * dx + dy * dy;
 
         if (distSq < BALL_DIAMETER * BALL_DIAMETER) {
@@ -594,6 +678,12 @@ function resolveBallBallCollisions(
             a.y -= ny * sep;
             b.x += nx * sep;
             b.y += ny * sep;
+            if (infinite) {
+              a.x = ((a.x % TABLE_LENGTH) + TABLE_LENGTH) % TABLE_LENGTH;
+              a.y = ((a.y % TABLE_WIDTH) + TABLE_WIDTH) % TABLE_WIDTH;
+              b.x = ((b.x % TABLE_LENGTH) + TABLE_LENGTH) % TABLE_LENGTH;
+              b.y = ((b.y % TABLE_WIDTH) + TABLE_WIDTH) % TABLE_WIDTH;
+            }
           }
 
           // Record first object ball contacted by the cue ball
@@ -686,7 +776,7 @@ export function stepPhysics(
 
   for (let s = 0; s < subSteps; s++) {
     for (let i = 0; i < balls.length; i++) {
-      stepBallMotion(balls[i], subDt, mode);
+      stepBallMotion(balls[i], subDt, mode, telemetry);
     }
     checkPockets(balls, telemetry, mode);
     resolveBallBallCollisions(balls, telemetry, mode);

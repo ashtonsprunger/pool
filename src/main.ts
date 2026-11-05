@@ -12,12 +12,13 @@ import {
   isPlayerOnEightBall,
 } from './game/rules';
 import {
+  INFINITE_PREVIEW_BORDER,
   TableViewport,
   computeTableViewport,
   screenToTable,
 } from './game/viewport';
 import { MultiplayerCoordinator, RoomSummary } from './net/sync';
-import { BALL_COLORS, BALL_RADIUS, FIXED_DT } from './physics/constants';
+import { BALL_COLORS, BALL_RADIUS, FIXED_DT, RAIL_BORDER } from './physics/constants';
 import {
   CueStrikeParams,
   ShotTelemetry,
@@ -170,7 +171,8 @@ function resolveSelectedNetworkMode(): GameMode {
     val === 'frictionless' ||
     val === 'portals' ||
     val === 'pinball' ||
-    val === 'blackhole'
+    val === 'blackhole' ||
+    val === 'infinite'
   ) {
     return val;
   }
@@ -244,7 +246,9 @@ coordinator = new MultiplayerCoordinator(initialRoomParam, {
 
 function resizeCanvas(): void {
   const rect = stageEl.getBoundingClientRect();
-  viewport = computeTableViewport(rect.width, rect.height);
+  const isInfinite = coordinator ? getGameMode(coordinator.getState()) === 'infinite' : false;
+  const borderInches = isInfinite ? INFINITE_PREVIEW_BORDER : RAIL_BORDER;
+  viewport = computeTableViewport(rect.width, rect.height, 3.5, borderInches);
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(viewport.widthCss * dpr);
   canvas.height = Math.round(viewport.heightCss * dpr);
@@ -349,6 +353,7 @@ function formatModeTag(mode: GameMode): string {
   if (mode === 'portals') return 'Portals';
   if (mode === 'pinball') return 'Pinball';
   if (mode === 'blackhole') return 'Black Hole';
+  if (mode === 'infinite') return 'Infinite';
   return 'Normal';
 }
 
@@ -552,6 +557,10 @@ function syncHud(): void {
 
   // Room button & Game Mode UI state
   const currentMode = getGameMode(state);
+  const targetBorder = currentMode === 'infinite' ? INFINITE_PREVIEW_BORDER : RAIL_BORDER;
+  if (viewport.borderInches !== targetBorder) {
+    resizeCanvas();
+  }
   const ashton = isPlayerAshton();
   secretCheatOption.classList.toggle('hidden', !ashton);
   secretCheatOption.disabled = !ashton;

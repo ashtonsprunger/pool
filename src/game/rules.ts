@@ -14,6 +14,7 @@ import {
 import {
   BallState,
   CueStrikeParams,
+  INFINITE_POCKETS,
   ShotTelemetry,
   applyCueStrike,
   areBallsMoving,
@@ -32,7 +33,8 @@ export type GameMode =
   | 'frictionless'
   | 'portals'
   | 'pinball'
-  | 'blackhole';
+  | 'blackhole'
+  | 'infinite';
 
 export interface GameState {
   seq: number;
@@ -59,7 +61,8 @@ export function getGameMode(state: GameState): GameMode {
     state.gameMode === 'frictionless' ||
     state.gameMode === 'portals' ||
     state.gameMode === 'pinball' ||
-    state.gameMode === 'blackhole'
+    state.gameMode === 'blackhole' ||
+    state.gameMode === 'infinite'
   ) {
     return state.gameMode;
   }
@@ -500,7 +503,7 @@ export function evaluateShotOutcome(
 
   const eightPocketed = telemetry.pocketedBallIds.includes(8);
   const mode = getGameMode(prevState);
-  const spotEarlyEight = mode === 'frictionless' || mode === 'pinball';
+  const spotEarlyEight = mode === 'frictionless' || mode === 'pinball' || mode === 'infinite';
 
   // In Frictionless / Pinball mode, if the 8-ball is knocked in early before the shooter is on the 8-ball,
   // spot it back on the foot spot so chain-reaction ricochets don't end the game prematurely.
@@ -681,83 +684,105 @@ export function computeAimPreview(
   const cueBall = state.balls.find((b) => b.id === 0)!;
   const dx = Math.cos(aimAngle);
   const dy = Math.sin(aimAngle);
+  const isInfinite = getGameMode(state) === 'infinite';
 
-  let minT = Infinity;
+  let minT = isInfinite ? 115.0 : Infinity;
   let hitBall: BallState | null = null;
 
-  // 1. Check intersection with all non-pocketed object balls (swept circle radius = 2 * BALL_RADIUS)
+  // 1. Check intersection with all non-pocketed object balls (swept circle radius = 2 * BALL_RADIUS).
+  // In Infinite mode, also check the 8 surrounding periodic table copies so aiming across a seam hits the mirrored ball!
   const hitRadius = BALL_DIAMETER;
-  for (const b of state.balls) {
-    if (b.id === 0 || b.pocketed) continue;
-    const ocx = b.x - cueBall.x;
-    const ocy = b.y - cueBall.y;
-    const proj = ocx * dx + ocy * dy;
-    if (proj <= 0) continue;
+  const offsets: readonly [number, number][] = isInfinite
+    ? [
+        [0, 0],
+        [-TABLE_LENGTH, 0],
+        [TABLE_LENGTH, 0],
+        [0, -TABLE_WIDTH],
+        [0, TABLE_WIDTH],
+        [-TABLE_LENGTH, -TABLE_WIDTH],
+        [TABLE_LENGTH, -TABLE_WIDTH],
+        [-TABLE_LENGTH, TABLE_WIDTH],
+        [TABLE_LENGTH, TABLE_WIDTH],
+      ]
+    : [[0, 0]];
 
-    const perpSq = ocx * ocx + ocy * ocy - proj * proj;
-    if (perpSq >= hitRadius * hitRadius) continue;
+  for (const [ox, oy] of offsets) {
+    for (const b of state.balls) {
+      if (b.id === 0 || b.pocketed) continue;
+      const bx = b.x + ox;
+      const by = b.y + oy;
+      const ocx = bx - cueBall.x;
+      const ocy = by - cueBall.y;
+      const proj = ocx * dx + ocy * dy;
+      if (proj <= 0) continue;
 
-    const t = proj - Math.sqrt(hitRadius * hitRadius - perpSq);
-    if (t > 0 && t < minT) {
-      minT = t;
-      hitBall = b;
+      const perpSq = ocx * ocx + ocy * ocy - proj * proj;
+      if (perpSq >= hitRadius * hitRadius) continue;
+
+      const t = proj - Math.sqrt(hitRadius * hitRadius - perpSq);
+      if (t > 0 && t < minT) {
+        minT = t;
+        hitBall = ox === 0 && oy === 0 ? b : { ...b, x: bx, y: by };
+      }
     }
   }
 
-  // 2. Check cushion wall distance if no ball hit before wall, respecting pocket openings
-  const minX = BALL_RADIUS;
-  const maxX = TABLE_LENGTH - BALL_RADIUS;
-  const minY = BALL_RADIUS;
-  const maxY = TABLE_WIDTH - BALL_RADIUS;
+  // 2. Check cushion wall distance if no ball hit before wall, respecting pocket openings (skip in Infinite mode)
+  if (!isInfinite) {
+    const minX = BALL_RADIUS;
+    const maxX = TABLE_LENGTH - BALL_RADIUS;
+    const minY = BALL_RADIUS;
+    const maxY = TABLE_WIDTH - BALL_RADIUS;
 
-  const isOnVerticalRail = (y: number) =>
-    y >= CORNER_JAW_OFFSET && y <= TABLE_WIDTH - CORNER_JAW_OFFSET;
-  const isOnHorizontalRail = (x: number) =>
-    (x >= CORNER_JAW_OFFSET && x <= 50 - SIDE_JAW_HALF_WIDTH) ||
-    (x >= 50 + SIDE_JAW_HALF_WIDTH && x <= TABLE_LENGTH - CORNER_JAW_OFFSET);
+    const isOnVerticalRail = (y: number) =>
+      y >= CORNER_JAW_OFFSET && y <= TABLE_WIDTH - CORNER_JAW_OFFSET;
+    const isOnHorizontalRail = (x: number) =>
+      (x >= CORNER_JAW_OFFSET && x <= 50 - SIDE_JAW_HALF_WIDTH) ||
+      (x >= 50 + SIDE_JAW_HALF_WIDTH && x <= TABLE_LENGTH - CORNER_JAW_OFFSET);
 
-  if (dx > 1e-6) {
-    const tRail = (maxX - cueBall.x) / dx;
-    if (tRail > 0) {
-      const yAtRail = cueBall.y + dy * tRail;
-      const tStop = isOnVerticalRail(yAtRail) ? tRail : (TABLE_LENGTH + 1.0 - cueBall.x) / dx;
-      minT = Math.min(minT, Math.max(0, tStop));
+    if (dx > 1e-6) {
+      const tRail = (maxX - cueBall.x) / dx;
+      if (tRail > 0) {
+        const yAtRail = cueBall.y + dy * tRail;
+        const tStop = isOnVerticalRail(yAtRail) ? tRail : (TABLE_LENGTH + 1.0 - cueBall.x) / dx;
+        minT = Math.min(minT, Math.max(0, tStop));
+      }
     }
-  }
-  if (dx < -1e-6) {
-    const tRail = (minX - cueBall.x) / dx;
-    if (tRail > 0) {
-      const yAtRail = cueBall.y + dy * tRail;
-      const tStop = isOnVerticalRail(yAtRail) ? tRail : (-1.0 - cueBall.x) / dx;
-      minT = Math.min(minT, Math.max(0, tStop));
+    if (dx < -1e-6) {
+      const tRail = (minX - cueBall.x) / dx;
+      if (tRail > 0) {
+        const yAtRail = cueBall.y + dy * tRail;
+        const tStop = isOnVerticalRail(yAtRail) ? tRail : (-1.0 - cueBall.x) / dx;
+        minT = Math.min(minT, Math.max(0, tStop));
+      }
     }
-  }
-  if (dy > 1e-6) {
-    const tRail = (maxY - cueBall.y) / dy;
-    if (tRail > 0) {
-      const xAtRail = cueBall.x + dx * tRail;
-      const tStop = isOnHorizontalRail(xAtRail) ? tRail : (TABLE_WIDTH + 1.0 - cueBall.y) / dy;
-      minT = Math.min(minT, Math.max(0, tStop));
+    if (dy > 1e-6) {
+      const tRail = (maxY - cueBall.y) / dy;
+      if (tRail > 0) {
+        const xAtRail = cueBall.x + dx * tRail;
+        const tStop = isOnHorizontalRail(xAtRail) ? tRail : (TABLE_WIDTH + 1.0 - cueBall.y) / dy;
+        minT = Math.min(minT, Math.max(0, tStop));
+      }
     }
-  }
-  if (dy < -1e-6) {
-    const tRail = (minY - cueBall.y) / dy;
-    if (tRail > 0) {
-      const xAtRail = cueBall.x + dx * tRail;
-      const tStop = isOnHorizontalRail(xAtRail) ? tRail : (-1.0 - cueBall.y) / dy;
-      minT = Math.min(minT, Math.max(0, tStop));
+    if (dy < -1e-6) {
+      const tRail = (minY - cueBall.y) / dy;
+      if (tRail > 0) {
+        const xAtRail = cueBall.x + dx * tRail;
+        const tStop = isOnHorizontalRail(xAtRail) ? tRail : (-1.0 - cueBall.y) / dy;
+        minT = Math.min(minT, Math.max(0, tStop));
+      }
     }
-  }
 
-  // If wall was closer than hitBall, clear hitBall
-  if (hitBall) {
-    const ocx = hitBall.x - cueBall.x;
-    const ocy = hitBall.y - cueBall.y;
-    const proj = ocx * dx + ocy * dy;
-    const perpSq = ocx * ocx + ocy * ocy - proj * proj;
-    const ballT = proj - Math.sqrt(Math.max(0, hitRadius * hitRadius - perpSq));
-    if (ballT > minT + 1e-4) {
-      hitBall = null;
+    // If wall was closer than hitBall, clear hitBall
+    if (hitBall) {
+      const ocx = hitBall.x - cueBall.x;
+      const ocy = hitBall.y - cueBall.y;
+      const proj = ocx * dx + ocy * dy;
+      const perpSq = ocx * ocx + ocy * ocy - proj * proj;
+      const ballT = proj - Math.sqrt(Math.max(0, hitRadius * hitRadius - perpSq));
+      if (ballT > minT + 1e-4) {
+        hitBall = null;
+      }
     }
   }
 
@@ -874,9 +899,9 @@ export function computeCheatPreview(
         if (!path) continue;
         const last = path[path.length - 1];
         if (b.pocketed) {
-          if (b.pocketId !== null && POCKETS[b.pocketId]) {
-            const pk = POCKETS[b.pocketId];
-            if (Math.hypot(pk.x - last.x, pk.y - last.y) > 0.1) {
+          if (b.pocketId !== null) {
+            const pk = mode === 'infinite' ? INFINITE_POCKETS[b.pocketId] : POCKETS[b.pocketId];
+            if (pk && Math.hypot(pk.x - last.x, pk.y - last.y) > 0.1) {
               path.push({ x: pk.x, y: pk.y });
             }
           }
@@ -906,9 +931,14 @@ export function computeCheatPreview(
     const pocketedThisShot = b.pocketed;
     let endX = b.x;
     let endY = b.y;
-    if (pocketedThisShot && b.pocketId !== null && POCKETS[b.pocketId]) {
-      endX = POCKETS[b.pocketId].renderX;
-      endY = POCKETS[b.pocketId].renderY;
+    if (pocketedThisShot && b.pocketId !== null) {
+      if (mode === 'infinite' && INFINITE_POCKETS[b.pocketId]) {
+        endX = INFINITE_POCKETS[b.pocketId].x;
+        endY = INFINITE_POCKETS[b.pocketId].y;
+      } else if (POCKETS[b.pocketId]) {
+        endX = POCKETS[b.pocketId].renderX;
+        endY = POCKETS[b.pocketId].renderY;
+      }
     }
     const last = path[path.length - 1];
     if (Math.hypot(endX - last.x, endY - last.y) > 0.05) {

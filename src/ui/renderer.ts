@@ -15,7 +15,7 @@ import {
   TABLE_LENGTH,
   TABLE_WIDTH,
 } from '../physics/constants';
-import { BallState } from '../physics/engine';
+import { BallState, INFINITE_POCKETS } from '../physics/engine';
 
 export interface RenderInputState {
   aimAngle: number;
@@ -75,14 +75,20 @@ export function renderPoolTable(
     ctx.scale(vp.scale, vp.scale);
   }
 
-  drawOuterRailsAndCushions(ctx);
-  drawPlayingSurfaceAndMarkings(ctx, state);
-  drawPockets(ctx, state);
+  const isInfinite = getGameMode(state) === 'infinite';
+
+  if (isInfinite) {
+    drawInfiniteTiledBoards(ctx, vp, state);
+  } else {
+    drawOuterRailsAndCushions(ctx);
+    drawPlayingSurfaceAndMarkings(ctx, state);
+    drawPockets(ctx, state);
+  }
 
   // Draw Aim Preview or Cheat Mode Trajectories (below balls/cue so balls sit cleanly on top)
   if (input.showAim && state.winner === null) {
     if (cheatPreview) {
-      drawCheatPreviewTrajectories(ctx, cheatPreview);
+      drawCheatPreviewTrajectories(ctx, cheatPreview, state);
     } else if (aimPreview) {
       drawAimGuide(ctx, aimPreview, vp.isPortrait);
     }
@@ -94,11 +100,73 @@ export function renderPoolTable(
     drawBallInHandHalo(ctx, cueBall, input.isDraggingCueBall);
   }
 
-  // Draw all non-pocketed balls at their current positions
+  // In Infinite mode, first draw the faded mirrored balls on the 8 surrounding boards
+  if (isInfinite) {
+    ctx.save();
+    ctx.beginPath();
+    const bdr = vp.borderInches || RAIL_BORDER;
+    ctx.rect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2);
+    ctx.clip();
+    ctx.globalAlpha = 0.36;
+    for (let gx = -1; gx <= 1; gx++) {
+      for (let gy = -1; gy <= 1; gy++) {
+        if (gx === 0 && gy === 0) continue;
+        const ox = gx * TABLE_LENGTH;
+        const oy = gy * TABLE_WIDTH;
+        for (const b of state.balls) {
+          if (b.pocketed) continue;
+          const bx = b.x + ox;
+          const by = b.y + oy;
+          if (
+            bx < -bdr - BALL_RADIUS ||
+            bx > TABLE_LENGTH + bdr + BALL_RADIUS ||
+            by < -bdr - BALL_RADIUS ||
+            by > TABLE_WIDTH + bdr + BALL_RADIUS
+          ) {
+            continue;
+          }
+          drawBall(ctx, { ...b, x: bx, y: by }, vp.isPortrait);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // Draw all non-pocketed balls at their current positions on the main board
   for (const b of state.balls) {
     if (!b.pocketed) {
       drawBall(ctx, b, vp.isPortrait);
     }
+  }
+
+  // In Infinite mode, if a ball is straddling a seam, also draw its wrapped portion inside [0..100, 0..50] at full opacity
+  if (isInfinite) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+    ctx.clip();
+    for (const b of state.balls) {
+      if (b.pocketed) continue;
+      const nearX = b.x < BALL_RADIUS + 0.1 || b.x > TABLE_LENGTH - BALL_RADIUS - 0.1;
+      const nearY = b.y < BALL_RADIUS + 0.1 || b.y > TABLE_WIDTH - BALL_RADIUS - 0.1;
+      if (!nearX && !nearY) continue;
+      for (let gx = -1; gx <= 1; gx++) {
+        for (let gy = -1; gy <= 1; gy++) {
+          if (gx === 0 && gy === 0) continue;
+          const bx = b.x + gx * TABLE_LENGTH;
+          const by = b.y + gy * TABLE_WIDTH;
+          if (
+            bx + BALL_RADIUS >= 0 &&
+            bx - BALL_RADIUS <= TABLE_LENGTH &&
+            by + BALL_RADIUS >= 0 &&
+            by - BALL_RADIUS <= TABLE_WIDTH
+          ) {
+            drawBall(ctx, { ...b, x: bx, y: by }, vp.isPortrait);
+          }
+        }
+      }
+    }
+    ctx.restore();
   }
 
   // Draw Cheat Mode End-State Ghost Balls
@@ -112,6 +180,179 @@ export function renderPoolTable(
   }
 
   ctx.restore();
+  ctx.restore();
+}
+
+function drawInfiniteTiledBoards(
+  ctx: CanvasRenderingContext2D,
+  vp: TableViewport,
+  state: GameState
+): void {
+  const bdr = vp.borderInches || RAIL_BORDER;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2, 2.2);
+  ctx.clip();
+
+  // 1. Background fill for surrounding neighbor boards (dimmed baize)
+  ctx.fillStyle = '#073622';
+  ctx.fillRect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2);
+
+  const drawSpot = (sx: number, sy: number, alpha: number) => {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 0.28, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(sx, sy, 0.1, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.fill();
+    ctx.restore();
+  };
+
+  // 2. Draw markings on the 8 surrounding neighbor boards (slightly faded)
+  for (let gx = -1; gx <= 1; gx++) {
+    for (let gy = -1; gy <= 1; gy++) {
+      if (gx === 0 && gy === 0) continue;
+      const ox = gx * TABLE_LENGTH;
+      const oy = gy * TABLE_WIDTH;
+
+      // Subtle checkerboard shade difference on diagonal vs orthogonal neighbors
+      ctx.fillStyle = (gx + gy) % 2 === 0 ? 'rgba(17, 107, 67, 0.32)' : 'rgba(11, 77, 48, 0.38)';
+      ctx.fillRect(ox, oy, TABLE_LENGTH, TABLE_WIDTH);
+
+      // Neighbor Head String line
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(ox + HEAD_STRING_X, oy);
+      ctx.lineTo(ox + HEAD_STRING_X, oy + TABLE_WIDTH);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.lineWidth = 0.11;
+      ctx.stroke();
+      ctx.restore();
+
+      drawSpot(ox + HEAD_SPOT.x, oy + HEAD_SPOT.y, 0.35);
+      drawSpot(ox + FOOT_SPOT.x, oy + FOOT_SPOT.y, 0.35);
+    }
+  }
+
+  // 3. Draw main center board (0..100 x 0..50) at full brightness
+  const clothGrad = ctx.createRadialGradient(50, 25, 4, 50, 25, 62);
+  clothGrad.addColorStop(0, '#116B43');
+  clothGrad.addColorStop(1, '#0B4D30');
+  ctx.fillStyle = clothGrad;
+  ctx.fillRect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+
+  if (state.isBreakShot && state.ballInHand) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.045)';
+    ctx.fillRect(0, 0, HEAD_STRING_X, TABLE_WIDTH);
+  }
+
+  // Main Head String line
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(HEAD_STRING_X, 0);
+  ctx.lineTo(HEAD_STRING_X, TABLE_WIDTH);
+  ctx.strokeStyle =
+    state.isBreakShot && state.ballInHand
+      ? 'rgba(255, 255, 255, 0.32)'
+      : 'rgba(255, 255, 255, 0.12)';
+  ctx.lineWidth = 0.12;
+  if (state.isBreakShot && state.ballInHand) {
+    ctx.setLineDash([0.6, 0.4]);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  drawSpot(HEAD_SPOT.x, HEAD_SPOT.y, 1.0);
+  drawSpot(FOOT_SPOT.x, FOOT_SPOT.y, 1.0);
+
+  // 4. Draw dotted teleport boundary seams separating the main board from the attached neighbor boards
+  ctx.save();
+  ctx.strokeStyle = 'rgba(186, 230, 253, 0.62)';
+  ctx.lineWidth = 0.18;
+  ctx.setLineDash([0.75, 0.55]);
+
+  // Vertical seams at x = 0 and x = 100
+  for (const sx of [0, TABLE_LENGTH]) {
+    ctx.beginPath();
+    ctx.moveTo(sx, -bdr);
+    ctx.lineTo(sx, TABLE_WIDTH + bdr);
+    ctx.stroke();
+  }
+  // Horizontal seams at y = 0 and y = 50
+  for (const sy of [0, TABLE_WIDTH]) {
+    ctx.beginPath();
+    ctx.moveTo(-bdr, sy);
+    ctx.lineTo(TABLE_LENGTH + bdr, sy);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Subtle diamond sights along the dotted seam lines
+  ctx.save();
+  ctx.fillStyle = 'rgba(212, 175, 55, 0.55)';
+  const dSize = 0.28;
+  const drawSeamDiamond = (cx: number, cy: number) => {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - dSize);
+    ctx.lineTo(cx + dSize, cy);
+    ctx.lineTo(cx, cy + dSize);
+    ctx.lineTo(cx - dSize, cy);
+    ctx.closePath();
+    ctx.fill();
+  };
+  for (let i = 1; i <= 7; i++) {
+    if (i === 4) continue;
+    drawSeamDiamond(i * 12.5, 0);
+    drawSeamDiamond(i * 12.5, TABLE_WIDTH);
+  }
+  for (let j = 1; j <= 3; j++) {
+    drawSeamDiamond(0, j * 12.5);
+    drawSeamDiamond(TABLE_LENGTH, j * 12.5);
+  }
+  ctx.restore();
+
+  // 5. Draw pockets at the grid seam intersections
+  for (const pk of INFINITE_POCKETS) {
+    ctx.beginPath();
+    ctx.arc(pk.x, pk.y, pk.renderRadius + 0.28, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(pk.x, pk.y, pk.renderRadius, 0, Math.PI * 2);
+    const pGrad = ctx.createRadialGradient(
+      pk.x,
+      pk.y,
+      pk.renderRadius * 0.1,
+      pk.x,
+      pk.y,
+      pk.renderRadius
+    );
+    pGrad.addColorStop(0, '#020408');
+    pGrad.addColorStop(0.8, '#090D16');
+    pGrad.addColorStop(1, '#1E293B');
+    ctx.fillStyle = pGrad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(pk.x, pk.y, pk.renderRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.38)';
+    ctx.lineWidth = 0.12;
+    ctx.stroke();
+  }
+
+  // Outer frame border around the preview viewport
+  ctx.beginPath();
+  ctx.roundRect(-bdr, -bdr, TABLE_LENGTH + bdr * 2, TABLE_WIDTH + bdr * 2, 2.2);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+  ctx.lineWidth = 0.22;
+  ctx.stroke();
+
   ctx.restore();
 }
 
@@ -573,9 +814,11 @@ function drawAimGuide(
 
 function drawCheatPreviewTrajectories(
   ctx: CanvasRenderingContext2D,
-  cheatPreview: CheatPreview
+  cheatPreview: CheatPreview,
+  state?: GameState
 ): void {
   ctx.save();
+  const isInfinite = state ? getGameMode(state) === 'infinite' : false;
 
   for (const eb of cheatPreview.endBalls) {
     if (!eb.moved || eb.path.length < 2) continue;
@@ -606,15 +849,21 @@ function drawCheatPreviewTrajectories(
     ctx.stroke();
 
     // Highlight pocket ring if pocketed on this shot
-    if (eb.pocketedThisShot && eb.pocketId !== null && POCKETS[eb.pocketId]) {
-      const pk = POCKETS[eb.pocketId];
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.arc(pk.renderX, pk.renderY, pk.renderRadius * 0.92, 0, Math.PI * 2);
-      const isBadPocket = eb.id === 0 || (eb.id === 8 && cheatPreview.isFoul);
-      ctx.strokeStyle = isBadPocket ? '#F87171' : '#4ADE80';
-      ctx.lineWidth = 0.22;
-      ctx.stroke();
+    if (eb.pocketedThisShot && eb.pocketId !== null) {
+      const infPk = isInfinite ? INFINITE_POCKETS[eb.pocketId] : null;
+      const stdPk = !isInfinite ? POCKETS[eb.pocketId] : null;
+      const rx = infPk ? infPk.x : stdPk ? stdPk.renderX : null;
+      const ry = infPk ? infPk.y : stdPk ? stdPk.renderY : null;
+      const rr = infPk ? infPk.renderRadius : stdPk ? stdPk.renderRadius : null;
+      if (rx !== null && ry !== null && rr !== null) {
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(rx, ry, rr * 0.92, 0, Math.PI * 2);
+        const isBadPocket = eb.id === 0 || (eb.id === 8 && cheatPreview.isFoul);
+        ctx.strokeStyle = isBadPocket ? '#F87171' : '#4ADE80';
+        ctx.lineWidth = 0.22;
+        ctx.stroke();
+      }
     }
   }
 

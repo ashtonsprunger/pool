@@ -1034,4 +1034,37 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
     // Top-Side pocket is at (50, -1.35), so Black Hole gravity pulls the passing ball toward -Y
     expect(blackHoleBall.y).toBeLessThan(normalBall.y - 0.5);
   });
+
+  it('wraps balls across table seams, resolves cross-seam collisions, and raycasts onto mirrored neighbor boards in Infinite mode', () => {
+    // 1. Wrap across right edge (x = 100 -> x = 0) and collide with a ball near x = 1.5
+    const cue = createBall(0, 97.5, 25.0);
+    const target = createBall(1, 1.5, 25.0);
+    cue.vx = 90.0;
+    cue.vy = 0;
+    const telemetry = createInitialTelemetry();
+
+    for (let s = 0; s < 30; s++) {
+      stepPhysics([cue, target], telemetry, 1 / 240, 'infinite');
+    }
+
+    expect(telemetry.firstContactBallId).toBe(1);
+    expect(target.vx).toBeGreaterThan(20.0); // Target ball near left edge received impact from cue wrapping across x=100
+
+    // 2. Aim preview across the left seam (from x=6 aiming left at -X hits a ball at x=94 via its x=-6 mirror image)
+    const state = createInitialGameState(901, 'infinite');
+    for (const b of state.balls) {
+      if (b.id !== 0 && b.id !== 2) b.pocketed = true;
+    }
+    const cueBall = state.balls.find((b) => b.id === 0)!;
+    const ball2 = state.balls.find((b) => b.id === 2)!;
+    cueBall.x = 6.0;
+    cueBall.y = 25.0;
+    ball2.x = 94.0;
+    ball2.y = 25.0;
+
+    const preview = computeAimPreview(state, Math.PI); // Aiming straight left (-X) across x=0 seam
+    expect(preview.hitBall).not.toBeNull();
+    expect(preview.hitBall?.id).toBe(2);
+    expect(preview.ghostX).toBeLessThan(0); // Ghost ball sits on the left mirrored preview board
+  });
 });
