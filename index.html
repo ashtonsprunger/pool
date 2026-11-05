@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0F1419" />
+    <title>8-Ball Pool</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top Material 3 HUD Bar -->
+      <header class="hud-bar">
+        <div class="player-pill" id="p1-pill">
+          <div class="player-header">
+            <span class="player-name" id="p1-name">P1</span>
+            <span class="player-group-tag" id="p1-group">Open</span>
+          </div>
+          <div class="ball-rack-dots" id="p1-balls"></div>
+        </div>
+
+        <div class="status-chip" id="status-chip" aria-live="polite">
+          Break Shot
+        </div>
+
+        <div class="player-pill" id="p2-pill">
+          <div class="player-header">
+            <span class="player-name" id="p2-name">P2</span>
+            <span class="player-group-tag" id="p2-group">Open</span>
+          </div>
+          <div class="ball-rack-dots" id="p2-balls"></div>
+        </div>
+
+        <button class="room-btn" id="room-btn" type="button" aria-label="Multiplayer & Room">
+          <span class="conn-dot" id="conn-dot"></span>
+          <span id="room-btn-label">Multiplayer</span>
+        </button>
+      </header>
+
+      <!-- Main Table Stage -->
+      <main class="table-stage" id="table-stage">
+        <canvas id="pool-canvas"></canvas>
+
+        <!-- Winner Overlay Action -->
+        <div class="winner-banner hidden" id="winner-banner">
+          <div class="winner-title" id="winner-title">Player 1 Wins</div>
+          <button class="m3-btn m3-btn-primary" id="rematch-btn" type="button">
+            New Rack
+          </button>
+        </div>
+      </main>
+
+      <!-- Bottom Tactile Control Dock -->
+      <footer class="control-dock" id="control-dock">
+        <!-- Cue Ball Spin / English Button -->
+        <button class="spin-trigger" id="spin-trigger" type="button" aria-label="Cue Ball Spin">
+          <span class="spin-ball-mini">
+            <span class="spin-dot-mini" id="spin-dot-mini"></span>
+          </span>
+        </button>
+
+        <!-- Pull-back Cue Power Slider -->
+        <div class="power-track-wrap" id="power-track-wrap">
+          <div class="power-track" id="power-track">
+            <div class="power-fill" id="power-fill"></div>
+            <div class="power-cue-thumb" id="power-thumb"></div>
+            <span class="power-hint" id="power-hint">Pull to shoot</span>
+          </div>
+        </div>
+      </footer>
+
+      <!-- Cue Ball Spin Popover -->
+      <div class="modal-backdrop hidden" id="spin-modal">
+        <div class="m3-sheet spin-sheet" role="dialog" aria-label="Cue Ball Spin">
+          <div class="spin-pad" id="spin-pad">
+            <div class="spin-crosshair-h"></div>
+            <div class="spin-crosshair-v"></div>
+            <div class="spin-contact-dot" id="spin-contact-dot"></div>
+          </div>
+          <div class="sheet-actions">
+            <button class="m3-btn m3-btn-tonal" id="spin-reset-btn" type="button">Center</button>
+            <button class="m3-btn m3-btn-primary" id="spin-done-btn" type="button">Done</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Multiplayer & Game Modal -->
+      <div class="modal-backdrop hidden" id="room-modal">
+        <div class="m3-sheet" role="dialog" aria-label="Multiplayer Room">
+          <div class="sheet-section">
+            <div class="room-code-display" id="modal-room-status">Local Pass &amp; Play</div>
+            <div class="sheet-row">
+              <button class="m3-btn m3-btn-primary" id="copy-link-btn" type="button">
+                Invite / Copy Link
+              </button>
+              <button class="m3-btn m3-btn-tonal hidden" id="leave-room-btn" type="button">
+                Local Mode
+              </button>
+            </div>
+          </div>
+
+          <div class="sheet-divider"></div>
+
+          <form class="sheet-row" id="join-room-form">
+            <input
+              type="text"
+              id="join-code-input"
+              class="m3-input"
+              placeholder="Room code"
+              maxlength="8"
+              autocomplete="off"
+              autocapitalize="characters"
+            />
+            <button class="m3-btn m3-btn-tonal" type="submit">Join</button>
+          </form>
+
+          <div class="sheet-divider"></div>
+
+          <div class="sheet-row">
+            <button class="m3-btn m3-btn-tonal" id="new-rack-btn" type="button">New Rack</button>
+            <button class="m3-btn m3-btn-text" id="close-modal-btn" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
