@@ -174,8 +174,8 @@ function stepBallMotion(b: BallState, dt: number, frictionless: boolean = false)
 
   if (frictionless) {
     const vMag = Math.hypot(b.vx, b.vy);
-    // Stop cutoff once pocketed balls and rail rebounds have drained nearly all kinetic energy
-    if (vMag < 0.65) {
+    // Stop cutoff once pocketed balls and collisions/rails have drained kinetic energy
+    if (vMag < 1.1) {
       b.vx = 0;
       b.vy = 0;
       b.wx = 0;
@@ -404,10 +404,13 @@ function applyCushionImpulse(
 
   const vt = b.vx * tx + b.vy * ty;
   if (frictionless) {
-    const restitution = isJaw ? 0.88 : 0.92;
-    const newVn = Math.max(0, approachSpeed * restitution);
-    b.vx = nx * newVn + tx * vt;
-    b.vy = ny * newVn + ty * vt;
+    // Dampen both normal and tangential velocity on rail bounce so shallow and direct rail hits lose energy
+    const normalRestitution = isJaw ? 0.66 : 0.74;
+    const tangentRetention = 0.84;
+    const newVn = Math.max(0, approachSpeed * normalRestitution);
+    const newVt = vt * tangentRetention;
+    b.vx = nx * newVn + tx * newVt;
+    b.vy = ny * newVn + ty * newVt;
     return;
   }
 
@@ -492,7 +495,7 @@ function resolveBallBallCollisions(
           const vn = rvx * nx + rvy * ny;
 
           if (vn > 0) {
-            const restitution = frictionless ? 0.98 : BALL_RESTITUTION;
+            const restitution = frictionless ? 0.80 : BALL_RESTITUTION;
             // Normal impulse for equal-mass spheres with restitution e
             const jn = 0.5 * (1 + restitution) * vn;
 
@@ -504,14 +507,20 @@ function resolveBallBallCollisions(
             // With our wz convention (where surface vel at -R*n is vt - R*wz),
             // surface vel at +R*n on A is v_At + R*a.wz, and at -R*n on B is v_Bt - R*b.wz.
             const vt = rvx * tx + rvy * ty + BALL_RADIUS * (a.wz + b.wz);
-            const jt = frictionless
-              ? 0
-              : -Math.sign(vt) * Math.min(BALL_FRICTION * jn, (1 / 7) * Math.abs(vt));
+            const jt = -Math.sign(vt) * Math.min(BALL_FRICTION * jn, (1 / 7) * Math.abs(vt));
 
             a.vx -= jn * nx - jt * tx;
             a.vy -= jn * ny - jt * ty;
             b.vx += jn * nx - jt * tx;
             b.vy += jn * ny - jt * ty;
+
+            if (frictionless) {
+              // Absorb energy on each ball-to-ball impact so multi-ball hits noticeably lose speed
+              a.vx *= 0.92;
+              a.vy *= 0.92;
+              b.vx *= 0.92;
+              b.vy *= 0.92;
+            }
 
             // Spin transfer around Z axis (gearing english opposes relative slip)
             const dwz = (2.5 * jt) / BALL_RADIUS;
@@ -601,7 +610,7 @@ export function simulateUntilRest(
   maxSteps?: number,
   frictionless: boolean = false
 ): number {
-  const effectiveMaxSteps = maxSteps ?? (frictionless ? 240 * 120 : 240 * 25);
+  const effectiveMaxSteps = maxSteps ?? (frictionless ? 240 * 35 : 240 * 25);
   let steps = 0;
   while (steps < effectiveMaxSteps && areBallsMoving(balls)) {
     stepPhysics(balls, telemetry, FIXED_DT, frictionless);

@@ -104,6 +104,7 @@ let isSimulating = false;
 let activeTelemetry: ShotTelemetry = createInitialTelemetry();
 let pendingSettledStateFromRemote: GameState | null = null;
 let physicsAccumulator = 0;
+let currentTimeScale = 1;
 let lastFrameTime = performance.now();
 
 // Pointer Interaction State
@@ -173,6 +174,9 @@ coordinator = new MultiplayerCoordinator(initialRoomParam, {
     }
     activeTelemetry = createInitialTelemetry();
     pendingSettledStateFromRemote = shot.settledState;
+    physicsAccumulator = 0;
+    currentTimeScale = 1;
+    lastFrameTime = performance.now();
     isSimulating = true;
     pullBackPower = 0;
     updatePowerUi(0);
@@ -806,6 +810,9 @@ function executeShot(strike: CueStrikeParams): void {
   applyCueStrike(cueBall, strike);
   activeTelemetry = createInitialTelemetry();
   pendingSettledStateFromRemote = settledState;
+  physicsAccumulator = 0;
+  currentTimeScale = 1;
+  lastFrameTime = performance.now();
   isSimulating = true;
 
   // Reset spin to center after shot
@@ -1027,25 +1034,27 @@ function animate(now: number): void {
   const isFrictionless = currentMode === 'frictionless';
 
   if (isSimulating) {
-    // In Frictionless mode, once the fastest ball slows below 28 in/s, smoothly fast-forward
-    // so the remaining glide/ricochets stay visually brisk instead of dragging out.
-    let timeScale = 1;
+    // In Frictionless mode, once the fastest ball slows below 22 in/s, smoothly ramp up timeScale
+    // so the remaining glide/ricochets stay visually brisk without sudden frame jumps.
+    let targetTimeScale = 1;
     if (isFrictionless) {
       const maxSpeed = getMaxBallSpeed(state.balls);
-      if (maxSpeed > 0 && maxSpeed < 28) {
-        timeScale = clamp(32 / Math.max(0.65, maxSpeed), 1.5, 28);
+      if (maxSpeed > 0 && maxSpeed < 22) {
+        targetTimeScale = clamp(24 / Math.max(1.1, maxSpeed), 1.0, 12);
       }
     }
+    currentTimeScale += (targetTimeScale - currentTimeScale) * 0.1;
 
-    physicsAccumulator += dt * timeScale;
+    physicsAccumulator += Math.min(0.033, dt) * currentTimeScale;
     let stepsThisFrame = 0;
-    while (physicsAccumulator >= FIXED_DT && stepsThisFrame < 140) {
+    while (physicsAccumulator >= FIXED_DT && stepsThisFrame < 40) {
       physicsAccumulator -= FIXED_DT;
       stepsThisFrame++;
       const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, isFrictionless);
       if (!stillMoving) {
         isSimulating = false;
         physicsAccumulator = 0;
+        currentTimeScale = 1;
         const nextState =
           pendingSettledStateFromRemote ??
           evaluateShotOutcome(state, state.balls, activeTelemetry);
