@@ -108,6 +108,15 @@
           <div class="sheet-section">
             <div class="room-code-display" id="modal-room-status">Local Pass &amp; Play</div>
 
+            <input
+              type="text"
+              id="player-name-input"
+              class="m3-input m3-input-name"
+              placeholder="Your name (required)"
+              maxlength="16"
+              autocomplete="nickname"
+            />
+
             <label class="m3-switch-row" for="cheat-mode-toggle">
               <div class="m3-switch-text">
                 <span class="m3-switch-title">Cheat Mode</span>
@@ -149,6 +158,23 @@
             <button class="m3-btn m3-btn-text" id="close-modal-btn" type="button">Close</button>
           </div>
         </div>
+      </div>
+
+      <!-- Mandatory Multiplayer Name Prompt Modal -->
+      <div class="modal-backdrop hidden" id="name-modal">
+        <form class="m3-sheet" id="name-modal-form" role="dialog" aria-label="Enter Your Name">
+          <div class="room-code-display">Enter Your Name to Play</div>
+          <input
+            type="text"
+            id="name-modal-input"
+            class="m3-input m3-input-name"
+            placeholder="Your name"
+            maxlength="16"
+            required
+            autocomplete="nickname"
+          />
+          <button class="m3-btn m3-btn-primary" type="submit">Play</button>
+        </form>
       </div>
     </div>
 

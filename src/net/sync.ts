@@ -16,6 +16,7 @@ import {
 } from '../physics/engine';
 
 const STORAGE_CLIENT_ID_KEY = 'pool8_client_id_v1';
+const STORAGE_PLAYER_NAME_KEY = 'pool8_player_name_v1';
 const STORAGE_ACTIVE_SESSION_KEY = 'pool8_active_session_v1';
 const STORAGE_ROOM_PREFIX = 'pool8_room_v1_';
 
@@ -32,6 +33,8 @@ export interface PersistedSession {
   mySeat: PlayerIndex | null;
   hostClientId: string | null;
   guestClientId: string | null;
+  hostName?: string | null;
+  guestName?: string | null;
   state: GameState;
   pendingShot: PendingShotRecord | null;
 }
@@ -41,17 +44,23 @@ export type NetPacket =
       type: 'HELLO';
       msgId: string;
       senderId: string;
+      senderName?: string | null;
       knownSeq: number;
       state: GameState;
       hostClientId: string | null;
       guestClientId: string | null;
+      hostName?: string | null;
+      guestName?: string | null;
     }
   | {
       type: 'SYNC_STATE';
       msgId: string;
       senderId: string;
+      senderName?: string | null;
       hostClientId: string;
       guestClientId: string | null;
+      hostName?: string | null;
+      guestName?: string | null;
       state: GameState;
     }
   | {
@@ -136,6 +145,26 @@ export function getOrCreateClientId(): string {
   }
 }
 
+export function getStoredPlayerName(): string {
+  try {
+    return (localStorage.getItem(STORAGE_PLAYER_NAME_KEY) ?? '').trim().slice(0, 16);
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredPlayerName(rawName: string): string {
+  const clean = rawName.trim().slice(0, 16);
+  try {
+    if (clean) {
+      localStorage.setItem(STORAGE_PLAYER_NAME_KEY, clean);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return clean;
+}
+
 /**
  * Resolves a PendingShotRecord deterministically to its settled GameState.
  * Used when a player closes the tab while balls are still moving and reopens it.
@@ -213,6 +242,7 @@ const MQTT_BROKERS = [
 
 export class MultiplayerCoordinator {
   public readonly clientId: string;
+  private myPlayerName: string;
   private session: PersistedSession;
   private callbacks: SyncCallbacks;
   private seenMsgIds = new Set<string>();
@@ -229,12 +259,14 @@ export class MultiplayerCoordinator {
   constructor(
     initialUrlRoom: string | null,
     callbacks: SyncCallbacks,
-    options?: { clientId?: string; disableNetwork?: boolean }
+    options?: { clientId?: string; disableNetwork?: boolean; playerName?: string }
   ) {
     this.clientId = options?.clientId ?? getOrCreateClientId();
+    this.myPlayerName = (options?.playerName ?? getStoredPlayerName()).trim().slice(0, 16);
     this.disableNetwork = Boolean(options?.disableNetwork);
     this.callbacks = callbacks;
     this.session = loadPersistedSession(initialUrlRoom);
+    this.applyMyNameToSeat();
 
     if (this.session.roomCode) {
       this.joinRoom(this.session.roomCode, false);
@@ -251,6 +283,38 @@ export class MultiplayerCoordinator {
   }
 
   private readonly disableNetwork: boolean;
+
+  private applyMyNameToSeat(): void {
+    if (!this.myPlayerName) return;
+    if (this.session.hostClientId === this.clientId || this.session.mySeat === 0) {
+      this.session.hostName = this.myPlayerName;
+    } else if (this.session.guestClientId === this.clientId || this.session.mySeat === 1) {
+      this.session.guestName = this.myPlayerName;
+    }
+  }
+
+  public getMyPlayerName(): string {
+    return this.myPlayerName;
+  }
+
+  public setMyPlayerName(rawName: string): void {
+    const clean = setStoredPlayerName(rawName);
+    this.myPlayerName = clean;
+    this.applyMyNameToSeat();
+    this.save();
+    if (this.session.roomCode) {
+      this.sendHello();
+    }
+    this.notifyConnection();
+  }
+
+  public getHostName(): string | null {
+    return this.session.hostName ?? null;
+  }
+
+  public getGuestName(): string | null {
+    return this.session.guestName ?? null;
+  }
 
   public getState(): GameState {
     return this.session.state;
@@ -289,6 +353,8 @@ export class MultiplayerCoordinator {
       mySeat: 0,
       hostClientId: this.clientId,
       guestClientId: null,
+      hostName: this.myPlayerName || null,
+      guestName: null,
       state: createInitialGameState(undefined, cheatMode),
       pendingShot: null,
     };
@@ -308,8 +374,11 @@ export class MultiplayerCoordinator {
         type: 'SYNC_STATE',
         msgId: generateId(),
         senderId: this.clientId,
+        senderName: this.myPlayerName || null,
         hostClientId: this.session.hostClientId,
         guestClientId: this.session.guestClientId,
+        hostName: this.session.hostName ?? null,
+        guestName: this.session.guestName ?? null,
         state: cloneGameState(this.session.state),
       });
     }
@@ -338,11 +407,14 @@ export class MultiplayerCoordinator {
         mySeat: null,
         hostClientId: null,
         guestClientId: null,
+        hostName: null,
+        guestName: null,
         state: createInitialGameState(),
         pendingShot: null,
       };
     }
 
+    this.applyMyNameToSeat();
     this.save();
     this.updateUrlRoomParam(code);
 
@@ -431,6 +503,7 @@ export class MultiplayerCoordinator {
       ) {
         this.session.hostClientId = this.clientId;
         this.session.mySeat = 0;
+        this.applyMyNameToSeat();
         this.save();
         this.notifyConnection();
         this.sendHello();
@@ -499,8 +572,11 @@ export class MultiplayerCoordinator {
         type: 'SYNC_STATE',
         msgId: generateId(),
         senderId: this.clientId,
+        senderName: this.myPlayerName || null,
         hostClientId: this.session.hostClientId,
         guestClientId: this.session.guestClientId,
+        hostName: this.session.hostName ?? null,
+        guestName: this.session.guestName ?? null,
         state: this.session.state,
       });
     }
@@ -566,15 +642,19 @@ export class MultiplayerCoordinator {
 
   private sendHello(): void {
     if (!this.session.roomCode) return;
+    this.applyMyNameToSeat();
     const cleanState = this.getCleanAuthoritativeState();
     this.broadcast({
       type: 'HELLO',
       msgId: generateId(),
       senderId: this.clientId,
+      senderName: this.myPlayerName || null,
       knownSeq: cleanState.seq,
       state: cloneGameState(cleanState),
       hostClientId: this.session.hostClientId,
       guestClientId: this.session.guestClientId,
+      hostName: this.session.hostName ?? null,
+      guestName: this.session.guestName ?? null,
     });
   }
 
@@ -616,7 +696,10 @@ export class MultiplayerCoordinator {
     senderId: string,
     remoteHostId: string | null,
     remoteGuestId: string | null,
-    remoteSeq: number
+    remoteSeq: number,
+    senderName?: string | null,
+    remoteHostName?: string | null,
+    remoteGuestName?: string | null
   ): void {
     const localState = this.getCleanAuthoritativeState();
     const localSeq = localState.seq;
@@ -674,6 +757,23 @@ export class MultiplayerCoordinator {
     } else {
       this.session.mySeat = null; // Spectator (3rd+ peer)
     }
+
+    // Reconcile player names for Host (Seat 0) and Guest (Seat 1)
+    if (this.clientId === winnerHostId && this.myPlayerName) {
+      this.session.hostName = this.myPlayerName;
+    } else if (senderId === winnerHostId && senderName) {
+      this.session.hostName = senderName;
+    } else if (remoteHostName) {
+      this.session.hostName = remoteHostName;
+    }
+
+    if (this.clientId === winnerGuestId && this.myPlayerName) {
+      this.session.guestName = this.myPlayerName;
+    } else if (senderId === winnerGuestId && senderName) {
+      this.session.guestName = senderName;
+    } else if (remoteGuestName) {
+      this.session.guestName = remoteGuestName;
+    }
   }
 
   public handlePacket(pkt: NetPacket): void {
@@ -689,7 +789,10 @@ export class MultiplayerCoordinator {
           pkt.senderId,
           pkt.hostClientId,
           pkt.guestClientId,
-          pkt.state.seq
+          pkt.state.seq,
+          pkt.senderName,
+          pkt.hostName,
+          pkt.guestName
         );
 
         const localClean = this.getCleanAuthoritativeState();
@@ -709,20 +812,25 @@ export class MultiplayerCoordinator {
           this.callbacks.onStateUpdated(this.session.state, 'reconnect');
         }
 
-        // Reply with SYNC_STATE when we have an authoritative state or newly reconciled seat assignment
+        // Reply with SYNC_STATE when we have an authoritative state or newly reconciled seat/name assignment
         if (
           this.session.hostClientId &&
           (!shouldAdoptRemote ||
             this.session.guestClientId !== pkt.guestClientId ||
-            this.session.hostClientId !== pkt.hostClientId)
+            this.session.hostClientId !== pkt.hostClientId ||
+            this.session.guestName !== pkt.guestName ||
+            this.session.hostName !== pkt.hostName)
         ) {
           const replyState = this.getCleanAuthoritativeState();
           this.broadcast({
             type: 'SYNC_STATE',
             msgId: generateId(),
             senderId: this.clientId,
+            senderName: this.myPlayerName || null,
             hostClientId: this.session.hostClientId,
             guestClientId: this.session.guestClientId,
+            hostName: this.session.hostName ?? null,
+            guestName: this.session.guestName ?? null,
             state: cloneGameState(replyState),
           });
         }
@@ -737,7 +845,10 @@ export class MultiplayerCoordinator {
           pkt.senderId,
           pkt.hostClientId,
           pkt.guestClientId,
-          pkt.state.seq
+          pkt.state.seq,
+          pkt.senderName,
+          pkt.hostName,
+          pkt.guestName
         );
 
         const localClean = this.getCleanAuthoritativeState();

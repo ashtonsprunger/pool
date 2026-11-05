@@ -35,6 +35,7 @@ import {
 } from '../src/game/viewport';
 import {
   MultiplayerCoordinator,
+  getStoredPlayerName,
   loadPersistedSession,
   resolvePendingShot,
 } from '../src/net/sync';
@@ -693,6 +694,83 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
 
       // Cheat mode remains enabled on the next turn's outcome
       expect(hardPreview.outcome.cheatMode).toBe(true);
+    } finally {
+      host.dispose();
+      guest.dispose();
+    }
+  });
+
+  it('persists player names locally and syncs hostName and guestName between peers', () => {
+    const store = new Map<string, string>();
+    (globalThis as unknown as { localStorage: Storage }).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => store.clear(),
+      key: () => null,
+      length: 0,
+    };
+
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+
+    const host = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'HostClient1',
+      disableNetwork: true,
+    });
+    const guest = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'GuestClient2',
+      disableNetwork: true,
+    });
+
+    try {
+      host.setMyPlayerName('Ashton');
+      expect(getStoredPlayerName()).toBe('Ashton');
+
+      const code = host.createMultiplayerRoom(false);
+      expect(host.getHostName()).toBe('Ashton');
+
+      guest.setMyPlayerName('Jordan');
+      guest.joinRoom(code, true);
+
+      // Guest sends HELLO with senderName: 'Jordan' to Host
+      host.handlePacket({
+        type: 'HELLO',
+        msgId: 'guest_hello_name',
+        senderId: guest.clientId,
+        senderName: guest.getMyPlayerName(),
+        knownSeq: guest.getState().seq,
+        state: guest.getState(),
+        hostClientId: null,
+        guestClientId: null,
+      });
+
+      expect(host.getHostName()).toBe('Ashton');
+      expect(host.getGuestName()).toBe('Jordan');
+
+      // Host replies with SYNC_STATE containing both hostName and guestName
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'host_sync_names',
+        senderId: host.clientId,
+        senderName: host.getMyPlayerName(),
+        hostClientId: host.getHostClientId()!,
+        guestClientId: host.getGuestClientId(),
+        hostName: host.getHostName(),
+        guestName: host.getGuestName(),
+        state: host.getState(),
+      });
+
+      expect(guest.getHostName()).toBe('Ashton');
+      expect(guest.getGuestName()).toBe('Jordan');
     } finally {
       host.dispose();
       guest.dispose();

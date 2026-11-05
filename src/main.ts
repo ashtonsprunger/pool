@@ -74,6 +74,7 @@ const spinDoneBtn = document.getElementById('spin-done-btn') as HTMLButtonElemen
 
 const roomModal = document.getElementById('room-modal') as HTMLElement;
 const modalRoomStatus = document.getElementById('modal-room-status') as HTMLElement;
+const playerNameInput = document.getElementById('player-name-input') as HTMLInputElement;
 const cheatModeToggle = document.getElementById('cheat-mode-toggle') as HTMLInputElement;
 const copyLinkBtn = document.getElementById('copy-link-btn') as HTMLButtonElement;
 const leaveRoomBtn = document.getElementById('leave-room-btn') as HTMLButtonElement;
@@ -81,6 +82,10 @@ const joinRoomForm = document.getElementById('join-room-form') as HTMLFormElemen
 const joinCodeInput = document.getElementById('join-code-input') as HTMLInputElement;
 const newRackBtn = document.getElementById('new-rack-btn') as HTMLButtonElement;
 const closeModalBtn = document.getElementById('close-modal-btn') as HTMLButtonElement;
+
+const nameModal = document.getElementById('name-modal') as HTMLElement;
+const nameModalForm = document.getElementById('name-modal-form') as HTMLFormElement;
+const nameModalInput = document.getElementById('name-modal-input') as HTMLInputElement;
 
 // Application State
 let viewport: TableViewport = computeTableViewport(window.innerWidth, window.innerHeight - 110);
@@ -258,27 +263,62 @@ function renderMiniBalls(container: HTMLElement, group: BallGroup | null, state:
   }
 }
 
+function formatStatusWithPlayerNames(rawMessage: string, p1Label: string, p2Label: string): string {
+  return rawMessage
+    .replace(/\bPlayer 1\b/g, p1Label)
+    .replace(/\bPlayer 2\b/g, p2Label);
+}
+
+function hasRequiredMultiplayerName(): boolean {
+  if (!coordinator.getRoomCode()) return true;
+  return coordinator.getMyPlayerName().trim().length > 0;
+}
+
 function syncHud(): void {
   const state = coordinator.getState();
   const roomCode = coordinator.getRoomCode();
   const mySeat = coordinator.getMySeat();
   const peerOnline = coordinator.isPeerConnected();
+  const myName = coordinator.getMyPlayerName();
+  const hostName = coordinator.getHostName();
+  const guestName = coordinator.getGuestName();
   const isSpectator =
     Boolean(roomCode) &&
     mySeat === null &&
     Boolean(coordinator.getHostClientId()) &&
     Boolean(coordinator.getGuestClientId());
 
+  if (document.activeElement !== playerNameInput) {
+    playerNameInput.value = myName;
+  }
+
+  // If in a multiplayer room and the player hasn't entered a name yet, prompt them immediately
+  if (roomCode && !myName && roomModal.classList.contains('hidden')) {
+    nameModal.classList.remove('hidden');
+  } else if (myName) {
+    nameModal.classList.add('hidden');
+  }
+
+  const p1Display = roomCode
+    ? hostName || (mySeat === 0 && myName ? myName : 'Player 1')
+    : 'Player 1';
+  const p2Display = roomCode
+    ? guestName || (mySeat === 1 && myName ? myName : peerOnline ? 'Player 2' : 'Waiting...')
+    : 'Player 2';
+  const p2StatusName = roomCode
+    ? guestName || (mySeat === 1 && myName ? myName : 'Player 2')
+    : 'Player 2';
+
   // Player names & turn highlight
   if (roomCode && mySeat !== null) {
-    p1Name.textContent = mySeat === 0 ? 'P1 (You)' : 'P1';
-    p2Name.textContent = mySeat === 1 ? 'P2 (You)' : 'P2';
+    p1Name.textContent = mySeat === 0 ? `${p1Display} (You)` : p1Display;
+    p2Name.textContent = mySeat === 1 ? `${p2Display} (You)` : p2Display;
   } else if (isSpectator) {
-    p1Name.textContent = 'P1';
-    p2Name.textContent = 'P2';
+    p1Name.textContent = p1Display;
+    p2Name.textContent = p2Display;
   } else {
-    p1Name.textContent = 'Player 1';
-    p2Name.textContent = 'Player 2';
+    p1Name.textContent = p1Display;
+    p2Name.textContent = p2Display;
   }
 
   p1Pill.classList.toggle('active-turn', state.currentPlayer === 0 && state.winner === null);
@@ -297,8 +337,11 @@ function syncHud(): void {
   renderMiniBalls(p1BallsEl, state.playerGroups[0], state);
   renderMiniBalls(p2BallsEl, state.playerGroups[1], state);
 
-  // Status message
-  statusChip.textContent = state.statusMessage;
+  // Status message with real player names
+  const formattedStatus = roomCode
+    ? formatStatusWithPlayerNames(state.statusMessage, p1Display, p2StatusName)
+    : state.statusMessage;
+  statusChip.textContent = formattedStatus;
   statusChip.classList.toggle('foul', state.lastFoulReason !== null && state.winner === null);
 
   // Room button & Cheat Mode UI state
@@ -322,10 +365,11 @@ function syncHud(): void {
     connDot.className = peerOnline ? 'conn-dot connected' : 'conn-dot waiting';
     const baseRoomLabel = isSpectator ? `Room ${roomCode} (View)` : `Room ${roomCode}`;
     roomBtnLabel.textContent = isCheat ? `${baseRoomLabel} · Cheat` : baseRoomLabel;
+    const opponentName = mySeat === 0 ? guestName : mySeat === 1 ? hostName : null;
     modalRoomStatus.textContent = isSpectator
       ? `Room ${roomCode} — Spectating`
       : peerOnline
-      ? `Room ${roomCode} — Opponent Connected`
+      ? `Room ${roomCode} — ${opponentName ? `vs ${opponentName}` : 'Opponent Connected'}`
       : `Room ${roomCode} — Waiting for Opponent`;
     leaveRoomBtn.classList.remove('hidden');
   }
@@ -333,13 +377,17 @@ function syncHud(): void {
   // Winner overlay
   if (state.winner !== null && !isSimulating) {
     winnerBanner.classList.remove('hidden');
-    winnerTitle.textContent = state.statusMessage;
+    winnerTitle.textContent = formattedStatus;
   } else {
     winnerBanner.classList.add('hidden');
   }
 
-  // Enable/disable controls based on turn
-  const canControl = !isSimulating && state.winner === null && coordinator.isMyTurn();
+  // Enable/disable controls based on turn & required multiplayer name
+  const canControl =
+    !isSimulating &&
+    state.winner === null &&
+    coordinator.isMyTurn() &&
+    hasRequiredMultiplayerName();
   controlDock.classList.toggle('disabled', !canControl);
 }
 
@@ -355,6 +403,11 @@ function maybeBroadcastAim(): void {
 // Canvas Pointer Events (Aiming & Ball-in-Hand Placement)
 canvas.addEventListener('pointerdown', (ev) => {
   const state = coordinator.getState();
+  if (!hasRequiredMultiplayerName()) {
+    nameModal.classList.remove('hidden');
+    nameModalInput.focus();
+    return;
+  }
   if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
 
   canvas.setPointerCapture(ev.pointerId);
@@ -652,12 +705,60 @@ spinPad.addEventListener('pointerup', () => {
 });
 
 // Room & Multiplayer Modal Controls
+function requireNameFromModalInput(): string | null {
+  const val = playerNameInput.value.trim() || coordinator.getMyPlayerName().trim();
+  if (!val) {
+    playerNameInput.classList.add('input-error');
+    playerNameInput.focus();
+    return null;
+  }
+  playerNameInput.classList.remove('input-error');
+  coordinator.setMyPlayerName(val);
+  return val;
+}
+
+playerNameInput.addEventListener('input', () => {
+  if (playerNameInput.value.trim().length > 0) {
+    playerNameInput.classList.remove('input-error');
+  }
+});
+
+playerNameInput.addEventListener('change', () => {
+  const trimmed = playerNameInput.value.trim();
+  if (trimmed.length > 0) {
+    playerNameInput.classList.remove('input-error');
+    coordinator.setMyPlayerName(trimmed);
+    syncHud();
+  }
+});
+
+nameModalForm.addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const trimmed = nameModalInput.value.trim();
+  if (!trimmed) {
+    nameModalInput.classList.add('input-error');
+    nameModalInput.focus();
+    return;
+  }
+  nameModalInput.classList.remove('input-error');
+  coordinator.setMyPlayerName(trimmed);
+  playerNameInput.value = trimmed;
+  nameModal.classList.add('hidden');
+  syncHud();
+});
+
 roomBtn.addEventListener('click', () => {
   syncHud();
   roomModal.classList.remove('hidden');
+  if (!coordinator.getMyPlayerName()) {
+    playerNameInput.focus();
+  }
 });
 
 closeModalBtn.addEventListener('click', () => {
+  if (coordinator.getRoomCode() && !coordinator.getMyPlayerName()) {
+    if (!requireNameFromModalInput()) return;
+  }
   roomModal.classList.add('hidden');
 });
 
@@ -668,6 +769,8 @@ cheatModeToggle.addEventListener('change', () => {
 });
 
 copyLinkBtn.addEventListener('click', async () => {
+  if (!requireNameFromModalInput()) return;
+
   let code = coordinator.getRoomCode();
   if (!code) {
     code = coordinator.createMultiplayerRoom(cheatModeToggle.checked);
@@ -695,6 +798,8 @@ leaveRoomBtn.addEventListener('click', () => {
 
 joinRoomForm.addEventListener('submit', (ev) => {
   ev.preventDefault();
+  if (!requireNameFromModalInput()) return;
+
   const code = joinCodeInput.value.trim().toUpperCase();
   if (code.length >= 2) {
     coordinator.joinRoom(code, false);
@@ -719,7 +824,10 @@ rematchBtn.addEventListener('click', handleStartNewRack);
 // Close modals on backdrop click
 for (const backdrop of [spinModal, roomModal]) {
   backdrop.addEventListener('click', (ev) => {
-    if (ev.target === backdrop) backdrop.classList.add('hidden');
+    if (ev.target === backdrop) {
+      backdrop.classList.add('hidden');
+      syncHud();
+    }
   });
 }
 

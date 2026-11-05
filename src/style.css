@@ -454,6 +454,17 @@ body {
   border-color: var(--m3-primary);
 }
 
+.m3-input-name {
+  text-transform: none;
+  width: 100%;
+  flex: none;
+}
+
+.m3-input.input-error {
+  border-color: var(--m3-danger);
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.25);
+}
+
 .m3-btn {
   flex: 1;
   height: 40px;
