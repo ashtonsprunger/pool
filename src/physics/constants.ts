@@ -120,20 +120,22 @@ export const CUSHION_SEGMENTS: readonly CushionSegment[] = [
   makeSegment('right-rail',        100, C, 100, 50 - C, 75, 25, false),
 
   // 8 Corner Pocket Jaw Facings (142 deg WPA cut angle)
-  makeSegment('tl-jaw-top',    CJ, -CD, C, 0,   25, 25, true),
-  makeSegment('tl-jaw-left',   -CD, CJ, 0, C,   25, 25, true),
-  makeSegment('tr-jaw-top',    100 - C, 0, 100 - CJ, -CD, 75, 25, true),
-  makeSegment('tr-jaw-right',  100, C, 100 + CD, CJ, 75, 25, true),
-  makeSegment('bl-jaw-bottom', CJ, 50 + CD, C, 50, 25, 25, true),
-  makeSegment('bl-jaw-left',   -CD, 50 - CJ, 0, 50 - C, 25, 25, true),
-  makeSegment('br-jaw-bottom', 100 - C, 50, 100 - CJ, 50 + CD, 75, 25, true),
-  makeSegment('br-jaw-right',  100, 50 - C, 100 + CD, 50 - CJ, 75, 25, true),
+  // Orient normals toward each corner pocket mouth (0,0), (100,0), (0,50), (100,50)
+  makeSegment('tl-jaw-top',    CJ, -CD, C, 0,   0, 0, true),
+  makeSegment('tl-jaw-left',   -CD, CJ, 0, C,   0, 0, true),
+  makeSegment('tr-jaw-top',    100 - C, 0, 100 - CJ, -CD, 100, 0, true),
+  makeSegment('tr-jaw-right',  100, C, 100 + CD, CJ, 100, 0, true),
+  makeSegment('bl-jaw-bottom', CJ, 50 + CD, C, 50, 0, 50, true),
+  makeSegment('bl-jaw-left',   -CD, 50 - CJ, 0, 50 - C, 0, 50, true),
+  makeSegment('br-jaw-bottom', 100 - C, 50, 100 - CJ, 50 + CD, 100, 50, true),
+  makeSegment('br-jaw-right',  100, 50 - C, 100 + CD, 50 - CJ, 100, 50, true),
 
   // 4 Side Pocket Jaw Facings (104 deg WPA cut angle)
-  makeSegment('ts-jaw-left',   S1, 0, S1 + SJ, -CD, 45, 25, true),
-  makeSegment('ts-jaw-right',  S2 - SJ, -CD, S2, 0, 55, 25, true),
-  makeSegment('bs-jaw-left',   S1, 50, S1 + SJ, 50 + CD, 45, 25, true),
-  makeSegment('bs-jaw-right',  S2 - SJ, 50 + CD, S2, 50, 55, 25, true),
+  // Orient normals toward each side pocket mouth (50, 0) and (50, 50)
+  makeSegment('ts-jaw-left',   S1, 0, S1 + SJ, -CD, 50, 0, true),
+  makeSegment('ts-jaw-right',  S2 - SJ, -CD, S2, 0, 50, 0, true),
+  makeSegment('bs-jaw-left',   S1, 50, S1 + SJ, 50 + CD, 50, 50, true),
+  makeSegment('bs-jaw-right',  S2 - SJ, 50 + CD, S2, 50, 50, 50, true),
 ];
 
 // Knuckle vertices (where main rails meet pocket jaws) for exact point-collision rebound

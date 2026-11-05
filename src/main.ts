@@ -108,10 +108,18 @@ const coordinator = new MultiplayerCoordinator(initialRoomParam, {
       pullBackPower = aim.power;
       spinX = aim.spinX;
       spinY = aim.spinY;
-      const cueBall = coordinator.getState().balls.find((b) => b.id === 0);
-      if (cueBall && !cueBall.pocketed) {
-        cueBall.x = aim.cueX;
-        cueBall.y = aim.cueY;
+      const state = coordinator.getState();
+      const cueBall = state.balls.find((b) => b.id === 0);
+      if (state.ballInHand && cueBall && !cueBall.pocketed) {
+        const valid = findNearestValidCueBallPosition(
+          aim.cueX,
+          aim.cueY,
+          state.balls,
+          state.isBreakShot
+        );
+        cueBall.x = valid.x;
+        cueBall.y = valid.y;
+        coordinator.persistCueBallPlacement(valid.x, valid.y);
       }
     }
   },
@@ -225,11 +233,19 @@ function syncHud(): void {
   const roomCode = coordinator.getRoomCode();
   const mySeat = coordinator.getMySeat();
   const peerOnline = coordinator.isPeerConnected();
+  const isSpectator =
+    Boolean(roomCode) &&
+    mySeat === null &&
+    Boolean(coordinator.getHostClientId()) &&
+    Boolean(coordinator.getGuestClientId());
 
   // Player names & turn highlight
   if (roomCode && mySeat !== null) {
     p1Name.textContent = mySeat === 0 ? 'P1 (You)' : 'P1';
     p2Name.textContent = mySeat === 1 ? 'P2 (You)' : 'P2';
+  } else if (isSpectator) {
+    p1Name.textContent = 'P1';
+    p2Name.textContent = 'P2';
   } else {
     p1Name.textContent = 'Player 1';
     p2Name.textContent = 'Player 2';
@@ -263,8 +279,10 @@ function syncHud(): void {
     leaveRoomBtn.classList.add('hidden');
   } else {
     connDot.className = peerOnline ? 'conn-dot connected' : 'conn-dot waiting';
-    roomBtnLabel.textContent = `Room ${roomCode}`;
-    modalRoomStatus.textContent = peerOnline
+    roomBtnLabel.textContent = isSpectator ? `Room ${roomCode} (View)` : `Room ${roomCode}`;
+    modalRoomStatus.textContent = isSpectator
+      ? `Room ${roomCode} — Spectating`
+      : peerOnline
       ? `Room ${roomCode} — Opponent Connected`
       : `Room ${roomCode} — Waiting for Opponent`;
     leaveRoomBtn.classList.remove('hidden');

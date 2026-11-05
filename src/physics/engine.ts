@@ -301,9 +301,12 @@ function resolveCushionCollisions(balls: BallState[], telemetry: ShotTelemetry):
       const dist = Math.hypot(dx, dy);
 
       if (dist < BALL_RADIUS) {
-        // Ensure ball is on the playing side or approaching the normal
         const nx = seg.nx;
         const ny = seg.ny;
+        // Ignore back-face contacts if a ball is behind a jaw segment
+        const signedDist = dx * nx + dy * ny;
+        if (signedDist < -BALL_RADIUS * 0.4) continue;
+
         const penetration = BALL_RADIUS - dist;
         b.x += nx * penetration;
         b.y += ny * penetration;
@@ -339,11 +342,12 @@ function resolveCushionCollisions(balls: BallState[], telemetry: ShotTelemetry):
       }
     }
 
-    // Safety outer boundary clamp (prevents any ball from ever escaping the table + throat box)
-    const minBoundX = -BALL_RADIUS;
-    const maxBoundX = TABLE_LENGTH + BALL_RADIUS;
-    const minBoundY = -BALL_RADIUS;
-    const maxBoundY = TABLE_WIDTH + BALL_RADIUS;
+    // Safety outer boundary clamp outside the 2.0-in pocket throats
+    const throatMargin = 2.5;
+    const minBoundX = -throatMargin;
+    const maxBoundX = TABLE_LENGTH + throatMargin;
+    const minBoundY = -throatMargin;
+    const maxBoundY = TABLE_WIDTH + throatMargin;
     if (b.x < minBoundX) { b.x = minBoundX; if (b.vx < 0) b.vx = -b.vx * 0.5; }
     if (b.x > maxBoundX) { b.x = maxBoundX; if (b.vx > 0) b.vx = -b.vx * 0.5; }
     if (b.y < minBoundY) { b.y = minBoundY; if (b.vy < 0) b.vy = -b.vy * 0.5; }
@@ -402,75 +406,85 @@ function applyCushionImpulse(
 
 /**
  * Resolves all ball-to-ball collisions with restitution and frictional throw/spin transfer.
+ * Uses multi-pass relaxation so tight 15-ball racks propagate impulse without ID-order bias.
  */
 function resolveBallBallCollisions(balls: BallState[], telemetry: ShotTelemetry): void {
   const n = balls.length;
-  for (let i = 0; i < n; i++) {
-    const a = balls[i];
-    if (a.pocketed) continue;
+  for (let pass = 0; pass < 3; pass++) {
+    let anyCollision = false;
 
-    for (let j = i + 1; j < n; j++) {
-      const b = balls[j];
-      if (b.pocketed) continue;
+    for (let i = 0; i < n; i++) {
+      const a = balls[i];
+      if (a.pocketed) continue;
 
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const distSq = dx * dx + dy * dy;
+      for (let j = i + 1; j < n; j++) {
+        const b = balls[j];
+        if (b.pocketed) continue;
 
-      if (distSq < BALL_DIAMETER * BALL_DIAMETER) {
-        const dist = Math.sqrt(distSq) || 1e-6;
-        // Normal from A to B
-        const nx = dx / dist;
-        const ny = dy / dist;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const distSq = dx * dx + dy * dy;
 
-        // Positional separation (equal mass)
-        const overlap = BALL_DIAMETER - dist;
-        if (overlap > 0) {
-          const sep = overlap * 0.5005;
-          a.x -= nx * sep;
-          a.y -= ny * sep;
-          b.x += nx * sep;
-          b.y += ny * sep;
-        }
+        if (distSq < BALL_DIAMETER * BALL_DIAMETER) {
+          anyCollision = true;
+          const dist = Math.sqrt(distSq) || 1e-6;
+          // Normal from A to B
+          const nx = dx / dist;
+          const ny = dy / dist;
 
-        // Record first object ball contacted by the cue ball
-        if (telemetry.firstContactBallId === null) {
-          if (a.id === 0 && b.id !== 0) {
-            telemetry.firstContactBallId = b.id;
-          } else if (b.id === 0 && a.id !== 0) {
-            telemetry.firstContactBallId = a.id;
+          // Positional separation (equal mass)
+          const overlap = BALL_DIAMETER - dist;
+          if (overlap > 0) {
+            const sep = overlap * 0.5005;
+            a.x -= nx * sep;
+            a.y -= ny * sep;
+            b.x += nx * sep;
+            b.y += ny * sep;
           }
-        }
 
-        // Relative velocity along normal
-        const rvx = a.vx - b.vx;
-        const rvy = a.vy - b.vy;
-        const vn = rvx * nx + rvy * ny;
+          // Record first object ball contacted by the cue ball
+          if (telemetry.firstContactBallId === null) {
+            if (a.id === 0 && b.id !== 0) {
+              telemetry.firstContactBallId = b.id;
+            } else if (b.id === 0 && a.id !== 0) {
+              telemetry.firstContactBallId = a.id;
+            }
+          }
 
-        if (vn > 0) {
-          // Normal impulse for equal-mass spheres with restitution e
-          const jn = 0.5 * (1 + BALL_RESTITUTION) * vn;
+          // Relative velocity along normal
+          const rvx = a.vx - b.vx;
+          const rvy = a.vy - b.vy;
+          const vn = rvx * nx + rvy * ny;
 
-          // Tangent vector t = (-ny, nx)
-          const tx = -ny;
-          const ty = nx;
+          if (vn > 0) {
+            // Normal impulse for equal-mass spheres with restitution e
+            const jn = 0.5 * (1 + BALL_RESTITUTION) * vn;
 
-          // Tangential relative surface velocity at point of contact (causes collision-induced & spin-induced throw)
-          const vt = rvx * tx + rvy * ty - BALL_RADIUS * (a.wz + b.wz);
-          const jt = -Math.sign(vt) * Math.min(BALL_FRICTION * jn, (1 / 7) * Math.abs(vt));
+            // Tangent vector t = (-ny, nx)
+            const tx = -ny;
+            const ty = nx;
 
-          a.vx -= jn * nx - jt * tx;
-          a.vy -= jn * ny - jt * ty;
-          b.vx += jn * nx - jt * tx;
-          b.vy += jn * ny - jt * ty;
+            // Tangential relative surface velocity at point of contact (+R*n on A, -R*n on B):
+            // With our wz convention (where surface vel at -R*n is vt - R*wz),
+            // surface vel at +R*n on A is v_At + R*a.wz, and at -R*n on B is v_Bt - R*b.wz.
+            const vt = rvx * tx + rvy * ty + BALL_RADIUS * (a.wz + b.wz);
+            const jt = -Math.sign(vt) * Math.min(BALL_FRICTION * jn, (1 / 7) * Math.abs(vt));
 
-          // Spin transfer around Z axis (gearing english)
-          const dwz = (2.5 * jt) / BALL_RADIUS;
-          a.wz += dwz;
-          b.wz += dwz;
+            a.vx -= jn * nx - jt * tx;
+            a.vy -= jn * ny - jt * ty;
+            b.vx += jn * nx - jt * tx;
+            b.vy += jn * ny - jt * ty;
+
+            // Spin transfer around Z axis (gearing english opposes relative slip)
+            const dwz = (2.5 * jt) / BALL_RADIUS;
+            a.wz += dwz;
+            b.wz += dwz;
+          }
         }
       }
     }
+
+    if (!anyCollision) break;
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BALL_DIAMETER,
   BALL_RADIUS,
+  CUSHION_SEGMENTS,
   FOOT_SPOT,
   HEAD_SPOT,
   HEAD_STRING_X,
@@ -15,6 +16,7 @@ import {
   createBall,
   createInitialTelemetry,
   simulateUntilRest,
+  stepPhysics,
 } from '../src/physics/engine';
 import {
   computeAimPreview,
@@ -30,7 +32,11 @@ import {
   screenToTable,
   tableToScreen,
 } from '../src/game/viewport';
-import { resolvePendingShot } from '../src/net/sync';
+import {
+  MultiplayerCoordinator,
+  loadPersistedSession,
+  resolvePendingShot,
+} from '../src/net/sync';
 
 describe('WPA Pool Table & Ball Specifications', () => {
   it('enforces exact 2:1 regulation playing surface and ball dimensions', () => {
@@ -360,5 +366,242 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
     applyCueStrike(ball, { angle: NaN, power: -1, spinX: NaN, spinY: Infinity });
     expect(ball.vx).toBe(0);
     expect(ball.vy).toBe(0);
+  });
+
+  it('orients all 12 corner and side pocket jaw normals into the pocket openings and rebounds rail shots into pockets', () => {
+    const jaws = CUSHION_SEGMENTS.filter((s) => s.isJaw);
+    expect(jaws.length).toBe(12);
+
+    // Verify each jaw's normal points toward its corresponding pocket mouth center
+    const pocketMouthTarget: Record<string, { x: number; y: number }> = {
+      'tl-jaw-top': { x: 0, y: 0 },
+      'tl-jaw-left': { x: 0, y: 0 },
+      'tr-jaw-top': { x: 100, y: 0 },
+      'tr-jaw-right': { x: 100, y: 0 },
+      'bl-jaw-bottom': { x: 0, y: 50 },
+      'bl-jaw-left': { x: 0, y: 50 },
+      'br-jaw-bottom': { x: 100, y: 50 },
+      'br-jaw-right': { x: 100, y: 50 },
+      'ts-jaw-left': { x: 50, y: 0 },
+      'ts-jaw-right': { x: 50, y: 0 },
+      'bs-jaw-left': { x: 50, y: 50 },
+      'bs-jaw-right': { x: 50, y: 50 },
+    };
+
+    for (const jaw of jaws) {
+      const target = pocketMouthTarget[jaw.id];
+      const midX = (jaw.ax + jaw.bx) * 0.5;
+      const midY = (jaw.ay + jaw.by) * 0.5;
+      const dot = (target.x - midX) * jaw.nx + (target.y - midY) * jaw.ny;
+      expect(dot).toBeGreaterThan(0);
+    }
+
+    // Shoot a ball along the top rail (y = 1.20) left into the top-left corner pocket jaw
+    const ball = createBall(1, 8.0, 1.2);
+    ball.vx = -65;
+    ball.vy = 0;
+    const tel = createInitialTelemetry();
+    simulateUntilRest([ball], tel);
+    expect(ball.pocketed).toBe(true);
+    expect(ball.pocketId).toBe(0);
+  });
+
+  it('models spin-induced throw and gearing english without amplifying sidespin on ball-ball impact', () => {
+    // Straight-in shot along +X from (20, 25) into ball 1 at (25, 25) with right english (spinX = +0.8)
+    const rightBalls = [createBall(0, 20, 25), createBall(1, 25, 25)];
+    applyCueStrike(rightBalls[0], { angle: 0, power: 0.35, spinX: 0.8, spinY: 0 });
+    const initialWzMag = Math.abs(rightBalls[0].wz);
+
+    // Step until first contact occurs
+    const tel = createInitialTelemetry();
+    let steps = 0;
+    while (tel.firstContactBallId === null && steps < 200) {
+      stepPhysics(rightBalls, tel);
+      steps++;
+    }
+    expect(tel.firstContactBallId).toBe(1);
+    // Cue ball sidespin magnitude must decrease on collision (never amplify)
+    expect(Math.abs(rightBalls[0].wz)).toBeLessThan(initialWzMag);
+    // Object ball acquires opposite-sign gearing sidespin
+    expect(Math.sign(rightBalls[1].wz)).toBe(-Math.sign(rightBalls[0].wz));
+    // Right english throws object ball to the left (-Y when aiming along +X)
+    expect(rightBalls[1].vy).toBeLessThan(0);
+  });
+
+  it('computes accurate aim preview even when targeting an object ball sitting inside pocket jaws', () => {
+    const state = createInitialGameState(301);
+    state.isBreakShot = false;
+    state.tableOpen = true;
+    // Place cue ball at (92, 8) and ball 1 deep in the top-right pocket mouth at (99.1, 1.0)
+    for (const b of state.balls) {
+      if (b.id !== 0 && b.id !== 1) b.pocketed = true;
+    }
+    const cue = state.balls.find((b) => b.id === 0)!;
+    const b1 = state.balls.find((b) => b.id === 1)!;
+    cue.x = 92.0;
+    cue.y = 8.0;
+    b1.x = 99.1;
+    b1.y = 1.0;
+
+    const angle = Math.atan2(b1.y - cue.y, b1.x - cue.x);
+    const preview = computeAimPreview(state, angle);
+    expect(preview.hitBall).not.toBeNull();
+    expect(preview.hitBall?.id).toBe(1);
+  });
+
+  it('deterministically resolves dual-host conflicts without seat oscillation and assigns 3rd peer as spectator', () => {
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+
+    const peerA = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'client_A_host',
+      disableNetwork: true,
+    });
+    const peerB = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'client_B_guest',
+      disableNetwork: true,
+    });
+    const peerC = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'client_C_spectator',
+      disableNetwork: true,
+    });
+
+    try {
+      const code = peerA.createMultiplayerRoom();
+      // Simulate slow network where peerB also claimed host before connecting
+      peerB.joinRoom(code, true);
+      (peerB as unknown as { session: { hostClientId: string; mySeat: 0 | 1 } }).session.hostClientId =
+        'client_B_guest';
+      (peerB as unknown as { session: { hostClientId: string; mySeat: 0 | 1 } }).session.mySeat = 0;
+
+      // Exchange HELLO packets between A and B
+      peerB.handlePacket({
+        type: 'HELLO',
+        msgId: 'msg_a_hello_1',
+        senderId: peerA.clientId,
+        knownSeq: peerA.getState().seq,
+        state: peerA.getState(),
+        hostClientId: peerA.getHostClientId(),
+        guestClientId: peerA.getGuestClientId(),
+      });
+      peerA.handlePacket({
+        type: 'HELLO',
+        msgId: 'msg_b_hello_1',
+        senderId: peerB.clientId,
+        knownSeq: peerB.getState().seq,
+        state: peerB.getState(),
+        hostClientId: 'client_B_guest',
+        guestClientId: null,
+      });
+
+      // Both peers must agree that client_A_host is Seat 0 and client_B_guest is Seat 1
+      expect(peerA.getHostClientId()).toBe('client_A_host');
+      expect(peerB.getHostClientId()).toBe('client_A_host');
+      expect(peerA.getGuestClientId()).toBe('client_B_guest');
+      expect(peerB.getGuestClientId()).toBe('client_B_guest');
+      expect(peerA.getMySeat()).toBe(0);
+      expect(peerB.getMySeat()).toBe(1);
+      expect(peerB.getState().rackSeed).toBe(peerA.getState().rackSeed);
+
+      // Now 3rd client (peerC) joins the same room and exchanges HELLO with peerA
+      peerC.joinRoom(code, false);
+      peerA.handlePacket({
+        type: 'HELLO',
+        msgId: 'msg_c_hello_1',
+        senderId: peerC.clientId,
+        knownSeq: peerC.getState().seq,
+        state: peerC.getState(),
+        hostClientId: null,
+        guestClientId: null,
+      });
+      peerC.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'msg_a_sync_to_c',
+        senderId: peerA.clientId,
+        hostClientId: peerA.getHostClientId()!,
+        guestClientId: peerA.getGuestClientId(),
+        state: peerA.getState(),
+      });
+
+      // Peer A and B retain seats 0 and 1; Peer C is assigned spectator (mySeat === null)
+      expect(peerA.getGuestClientId()).toBe('client_B_guest');
+      expect(peerC.getHostClientId()).toBe('client_A_host');
+      expect(peerC.getGuestClientId()).toBe('client_B_guest');
+      expect(peerC.getMySeat()).toBeNull();
+      expect(peerC.isMyTurn()).toBe(false);
+    } finally {
+      peerA.dispose();
+      peerB.dispose();
+      peerC.dispose();
+    }
+  });
+
+  it('preserves uncorrupted baseState in localStorage if saved mid-shot while balls are moving', () => {
+    const store = new Map<string, string>();
+    (globalThis as unknown as { localStorage: Storage }).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => store.clear(),
+      key: () => null,
+      length: 0,
+    };
+
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+
+    const coord = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'PersistTestClient',
+      disableNetwork: true,
+    });
+
+    try {
+      const code = coord.createMultiplayerRoom();
+      const initialState = coord.getState();
+      const strike = { angle: 0, power: 0.85, spinX: 0, spinY: 0 };
+      const expectedSettled = resolvePendingShot({
+        baseState: initialState,
+        cueX: 25,
+        cueY: 25,
+        strike,
+      });
+
+      // Start shot and then mutate coord.getState().balls to simulate mid-shot physics frames
+      coord.recordShotStart(25, 25, strike, expectedSettled);
+      stepPhysics(coord.getState().balls, createInitialTelemetry());
+      stepPhysics(coord.getState().balls, createInitialTelemetry());
+
+      // Trigger a mid-shot save via incoming HELLO packet
+      coord.handlePacket({
+        type: 'HELLO',
+        msgId: 'mid_shot_hello',
+        senderId: 'OtherPeerId',
+        knownSeq: 1,
+        state: initialState,
+        hostClientId: coord.clientId,
+        guestClientId: 'OtherPeerId',
+      });
+
+      // Simulate tab close and reopen via loadPersistedSession
+      const recovered = loadPersistedSession(code);
+      expect(recovered.pendingShot).toBeNull();
+      expect(recovered.state.seq).toBe(expectedSettled.seq);
+      expect(recovered.state.balls[0].x).toBeCloseTo(expectedSettled.balls[0].x, 4);
+      expect(recovered.state.balls[0].y).toBeCloseTo(expectedSettled.balls[0].y, 4);
+    } finally {
+      coord.dispose();
+    }
   });
 });

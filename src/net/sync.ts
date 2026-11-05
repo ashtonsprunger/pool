@@ -3,6 +3,7 @@ import { joinRoom, Room } from 'trystero/mqtt';
 import {
   GameState,
   PlayerIndex,
+  cloneGameState,
   createInitialGameState,
   evaluateShotOutcome,
 } from '../game/rules';
@@ -23,6 +24,7 @@ export interface PendingShotRecord {
   cueX: number;
   cueY: number;
   strike: CueStrikeParams;
+  settledState?: GameState;
 }
 
 export interface PersistedSession {
@@ -224,8 +226,13 @@ export class MultiplayerCoordinator {
   private peerLastSeenAt = 0;
   private heartbeatTimer: number | null = null;
 
-  constructor(initialUrlRoom: string | null, callbacks: SyncCallbacks) {
-    this.clientId = getOrCreateClientId();
+  constructor(
+    initialUrlRoom: string | null,
+    callbacks: SyncCallbacks,
+    options?: { clientId?: string; disableNetwork?: boolean }
+  ) {
+    this.clientId = options?.clientId ?? getOrCreateClientId();
+    this.disableNetwork = Boolean(options?.disableNetwork);
     this.callbacks = callbacks;
     this.session = loadPersistedSession(initialUrlRoom);
 
@@ -235,6 +242,8 @@ export class MultiplayerCoordinator {
       this.save();
     }
   }
+
+  private readonly disableNetwork: boolean;
 
   public getState(): GameState {
     return this.session.state;
@@ -246,6 +255,14 @@ export class MultiplayerCoordinator {
 
   public getMySeat(): PlayerIndex | null {
     return this.session.mySeat;
+  }
+
+  public getHostClientId(): string | null {
+    return this.session.hostClientId;
+  }
+
+  public getGuestClientId(): string | null {
+    return this.session.guestClientId;
   }
 
   public isPeerConnected(): boolean {
@@ -287,6 +304,8 @@ export class MultiplayerCoordinator {
         this.session.mySeat = 0;
       } else if (this.session.guestClientId === this.clientId) {
         this.session.mySeat = 1;
+      } else {
+        this.session.mySeat = null;
       }
     } else if (this.session.roomCode !== code) {
       this.session = {
@@ -314,84 +333,92 @@ export class MultiplayerCoordinator {
       }
     }
 
-    // 2. Trystero WebRTC P2P Room
-    try {
-      this.trysteroRoom = joinRoom(
-        { appId: 'antigravity-pool-8ball-v1', relayUrls: MQTT_BROKERS },
-        code
-      );
-      const [sendPkt, getPkt] = this.trysteroRoom.makeAction<{ raw: string }>('pkt');
-      this.trysteroSend = (pkt: NetPacket) => {
-        try {
-          sendPkt({ raw: JSON.stringify(pkt) });
-        } catch {
-          // Ignore send errors
-        }
-      };
-      getPkt((data) => {
-        try {
-          if (data && typeof data.raw === 'string') {
-            this.handlePacket(JSON.parse(data.raw) as NetPacket);
-          }
-        } catch {
-          // Ignore malformed packet
-        }
-      });
-      this.trysteroRoom.onPeerJoin(() => {
-        this.peerLastSeenAt = Date.now();
-        this.sendHello();
-        this.notifyConnection();
-      });
-    } catch {
-      // Fallback to MQTT-over-WSS & BroadcastChannel
-    }
-
-    // 3. Direct MQTT-over-WSS Pub/Sub Fallback (works even when WebRTC UDP is blocked by mobile NAT)
-    const topic = `antigravity-pool8-v1/room/${code}`;
-    for (const brokerUrl of MQTT_BROKERS) {
+    if (!this.disableNetwork) {
+      // 2. Trystero WebRTC P2P Room
       try {
-        const client = mqtt.connect(brokerUrl, {
-          keepalive: 30,
-          reconnectPeriod: 3000,
-          connectTimeout: 8000,
-        });
-        client.on('connect', () => {
-          client.subscribe(topic, { qos: 0 }, () => {
-            this.sendHello();
-          });
-        });
-        client.on('message', (_t, payload) => {
+        this.trysteroRoom = joinRoom(
+          { appId: 'antigravity-pool-8ball-v1', relayUrls: MQTT_BROKERS },
+          code
+        );
+        const [sendPkt, getPkt] = this.trysteroRoom.makeAction<{ raw: string }>('pkt');
+        this.trysteroSend = (pkt: NetPacket) => {
           try {
-            const pkt = JSON.parse(payload.toString()) as NetPacket;
-            this.handlePacket(pkt);
+            sendPkt({ raw: JSON.stringify(pkt) });
           } catch {
-            // Ignore malformed packets
+            // Ignore send errors
+          }
+        };
+        getPkt((data) => {
+          try {
+            if (data && typeof data.raw === 'string') {
+              this.handlePacket(JSON.parse(data.raw) as NetPacket);
+            }
+          } catch {
+            // Ignore malformed packet
           }
         });
-        this.mqttClients.push(client);
+        this.trysteroRoom.onPeerJoin(() => {
+          this.peerLastSeenAt = Date.now();
+          this.sendHello();
+          this.notifyConnection();
+        });
       } catch {
-        // Ignore broker failure
+        // Fallback to MQTT-over-WSS & BroadcastChannel
+      }
+
+      // 3. Direct MQTT-over-WSS Pub/Sub Fallback (works even when WebRTC UDP is blocked by mobile NAT)
+      const topic = `antigravity-pool8-v1/room/${code}`;
+      for (const brokerUrl of MQTT_BROKERS) {
+        try {
+          const client = mqtt.connect(brokerUrl, {
+            keepalive: 30,
+            reconnectPeriod: 3000,
+            connectTimeout: 8000,
+          });
+          client.on('connect', () => {
+            client.subscribe(topic, { qos: 0 }, () => {
+              this.sendHello();
+            });
+          });
+          client.on('message', (_t, payload) => {
+            try {
+              const pkt = JSON.parse(payload.toString()) as NetPacket;
+              this.handlePacket(pkt);
+            } catch {
+              // Ignore malformed packets
+            }
+          });
+          this.mqttClients.push(client);
+        } catch {
+          // Ignore broker failure
+        }
       }
     }
 
     this.sendHello();
-    // If no peer claims host within 900ms and we don't have a seat yet, we become host (Seat 0)
-    window.setTimeout(() => {
-      if (this.session.roomCode === code && this.session.mySeat === null) {
+    // If no peer claims host within 2000ms and we don't have a seat yet, we become host (Seat 0)
+    const scheduleTimeout = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
+    scheduleTimeout(() => {
+      if (
+        this.session.roomCode === code &&
+        this.session.mySeat === null &&
+        this.session.hostClientId === null
+      ) {
         this.session.hostClientId = this.clientId;
         this.session.mySeat = 0;
         this.save();
         this.notifyConnection();
         this.sendHello();
       }
-    }, 900);
+    }, 2000);
 
-    this.heartbeatTimer = window.setInterval(() => {
+    const scheduleInterval = typeof window !== 'undefined' ? window.setInterval : setInterval;
+    this.heartbeatTimer = scheduleInterval(() => {
       if (this.session.roomCode) {
         this.sendHello();
         this.notifyConnection();
       }
-    }, 4500);
+    }, 4500) as unknown as number;
 
     this.notifyConnection();
   }
@@ -407,12 +434,19 @@ export class MultiplayerCoordinator {
     this.notifyConnection();
   }
 
-  public recordShotStart(cueX: number, cueY: number, strike: CueStrikeParams, settledState: GameState): void {
+  public recordShotStart(
+    cueX: number,
+    cueY: number,
+    strike: CueStrikeParams,
+    settledState: GameState
+  ): void {
+    // Deep-clone baseState so live animation mutations to session.state.balls never corrupt pendingShot
     this.session.pendingShot = {
-      baseState: this.session.state,
+      baseState: cloneGameState(this.session.state),
       cueX,
       cueY,
-      strike,
+      strike: { ...strike },
+      settledState: cloneGameState(settledState),
     };
     this.save();
 
@@ -425,13 +459,13 @@ export class MultiplayerCoordinator {
         cueX,
         cueY,
         strike,
-        settledState,
+        settledState: cloneGameState(settledState),
       });
     }
   }
 
   public commitSettledState(newState: GameState): void {
-    this.session.state = newState;
+    this.session.state = cloneGameState(newState);
     this.session.pendingShot = null;
     this.save();
 
@@ -442,7 +476,7 @@ export class MultiplayerCoordinator {
         senderId: this.clientId,
         hostClientId: this.session.hostClientId,
         guestClientId: this.session.guestClientId,
-        state: newState,
+        state: this.session.state,
       });
     }
   }
@@ -491,20 +525,28 @@ export class MultiplayerCoordinator {
         type: 'NEW_GAME',
         msgId: generateId(),
         senderId: this.clientId,
-        state: fresh,
+        state: cloneGameState(fresh),
       });
     }
     return fresh;
   }
 
+  private getCleanAuthoritativeState(): GameState {
+    if (this.session.pendingShot) {
+      return this.session.pendingShot.settledState ?? this.session.pendingShot.baseState;
+    }
+    return this.session.state;
+  }
+
   private sendHello(): void {
     if (!this.session.roomCode) return;
+    const cleanState = this.getCleanAuthoritativeState();
     this.broadcast({
       type: 'HELLO',
       msgId: generateId(),
       senderId: this.clientId,
-      knownSeq: this.session.state.seq,
-      state: this.session.state,
+      knownSeq: cleanState.seq,
+      state: cloneGameState(cleanState),
       hostClientId: this.session.hostClientId,
       guestClientId: this.session.guestClientId,
     });
@@ -540,7 +582,75 @@ export class MultiplayerCoordinator {
     }
   }
 
-  private handlePacket(pkt: NetPacket): void {
+  /**
+   * Deterministically reconciles hostClientId, guestClientId, and mySeat between local session and incoming packet.
+   * Guarantees zero split-brain oscillation and protects established seats from 3rd-peer spectator hijacking.
+   */
+  private reconcilePeerRoles(
+    senderId: string,
+    remoteHostId: string | null,
+    remoteGuestId: string | null,
+    remoteSeq: number
+  ): void {
+    const localState = this.getCleanAuthoritativeState();
+    const localSeq = localState.seq;
+    const localHostId = this.session.hostClientId;
+    const localGuestId = this.session.guestClientId;
+
+    let winnerHostId: string;
+    if (localHostId && !remoteHostId) {
+      winnerHostId = localHostId;
+    } else if (!localHostId && remoteHostId) {
+      winnerHostId = remoteHostId;
+    } else if (!localHostId && !remoteHostId) {
+      if (remoteSeq !== localSeq) {
+        winnerHostId = remoteSeq > localSeq ? senderId : this.clientId;
+      } else {
+        winnerHostId = this.clientId < senderId ? this.clientId : senderId;
+      }
+    } else if (localHostId === remoteHostId) {
+      winnerHostId = localHostId!;
+    } else {
+      // Both peers have non-null, conflicting hostClientIds: apply strict total ordering
+      const localHasGuest = Boolean(localGuestId && localGuestId !== localHostId);
+      const remoteHasGuest = Boolean(remoteGuestId && remoteGuestId !== remoteHostId);
+      if (localSeq !== remoteSeq) {
+        winnerHostId = remoteSeq > localSeq ? remoteHostId! : localHostId!;
+      } else if (localHasGuest !== remoteHasGuest) {
+        winnerHostId = remoteHasGuest ? remoteHostId! : localHostId!;
+      } else {
+        winnerHostId = remoteHostId! < localHostId! ? remoteHostId! : localHostId!;
+      }
+    }
+
+    this.session.hostClientId = winnerHostId;
+
+    // Resolve guestClientId without allowing a 3rd client to overwrite an existing guest
+    let winnerGuestId: string | null = null;
+    if (senderId === winnerHostId && remoteGuestId && remoteGuestId !== winnerHostId) {
+      winnerGuestId = remoteGuestId;
+    } else if (localGuestId && localGuestId !== winnerHostId) {
+      winnerGuestId = localGuestId;
+    } else if (remoteGuestId && remoteGuestId !== winnerHostId) {
+      winnerGuestId = remoteGuestId;
+    } else if (senderId !== winnerHostId && this.clientId === winnerHostId) {
+      winnerGuestId = senderId;
+    } else if (this.clientId !== winnerHostId && senderId === winnerHostId) {
+      winnerGuestId = this.clientId;
+    }
+
+    this.session.guestClientId = winnerGuestId;
+
+    if (this.clientId === this.session.hostClientId) {
+      this.session.mySeat = 0;
+    } else if (this.clientId === this.session.guestClientId) {
+      this.session.mySeat = 1;
+    } else {
+      this.session.mySeat = null; // Spectator (3rd+ peer)
+    }
+  }
+
+  public handlePacket(pkt: NetPacket): void {
     if (!pkt || !pkt.msgId || pkt.senderId === this.clientId) return;
     if (this.seenMsgIds.has(pkt.msgId)) return;
     this.seenMsgIds.add(pkt.msgId);
@@ -549,52 +659,36 @@ export class MultiplayerCoordinator {
 
     switch (pkt.type) {
       case 'HELLO': {
-        // Resolve host/guest seats
-        if (!this.session.hostClientId && pkt.hostClientId) {
-          this.session.hostClientId = pkt.hostClientId;
-        }
-        if (this.session.hostClientId === this.clientId) {
-          this.session.mySeat = 0;
-          if (!this.session.guestClientId || this.session.guestClientId === pkt.senderId) {
-            this.session.guestClientId = pkt.senderId;
-          }
-        } else if (pkt.hostClientId && pkt.hostClientId !== this.clientId) {
-          this.session.hostClientId = pkt.hostClientId;
-          this.session.guestClientId = this.clientId;
-          this.session.mySeat = 1;
-        } else if (!this.session.hostClientId && !pkt.hostClientId) {
-          // Tie-breaker by lexicographical clientId
-          if (this.clientId < pkt.senderId) {
-            this.session.hostClientId = this.clientId;
-            this.session.guestClientId = pkt.senderId;
-            this.session.mySeat = 0;
-          } else {
-            this.session.hostClientId = pkt.senderId;
-            this.session.guestClientId = this.clientId;
-            this.session.mySeat = 1;
-          }
-        }
+        this.reconcilePeerRoles(
+          pkt.senderId,
+          pkt.hostClientId,
+          pkt.guestClientId,
+          pkt.state.seq
+        );
 
-        // State reconciliation: higher seq wins; on tie, host state wins
-        if (
-          pkt.state.seq > this.session.state.seq ||
-          (pkt.state.seq === this.session.state.seq &&
-            this.session.mySeat === 1 &&
-            pkt.state.rackSeed !== this.session.state.rackSeed)
-        ) {
-          this.session.state = pkt.state;
+        const localClean = this.getCleanAuthoritativeState();
+        const shouldAdoptRemote =
+          pkt.state.seq > localClean.seq ||
+          (pkt.state.seq === localClean.seq &&
+            this.session.hostClientId !== this.clientId &&
+            pkt.senderId === this.session.hostClientId &&
+            pkt.state.rackSeed !== localClean.rackSeed);
+
+        if (shouldAdoptRemote) {
+          this.session.state = cloneGameState(pkt.state);
           this.session.pendingShot = null;
           this.save();
           this.callbacks.onStateUpdated(this.session.state, 'reconnect');
         } else if (this.session.hostClientId) {
-          // Reply with our authoritative state
+          // Reply with authoritative state
+          const replyState = this.getCleanAuthoritativeState();
           this.broadcast({
             type: 'SYNC_STATE',
             msgId: generateId(),
             senderId: this.clientId,
             hostClientId: this.session.hostClientId,
             guestClientId: this.session.guestClientId,
-            state: this.session.state,
+            state: cloneGameState(replyState),
           });
         }
 
@@ -604,36 +698,45 @@ export class MultiplayerCoordinator {
       }
 
       case 'SYNC_STATE': {
-        this.session.hostClientId = pkt.hostClientId;
-        if (pkt.guestClientId) {
-          this.session.guestClientId = pkt.guestClientId;
-        }
-        if (this.session.hostClientId === this.clientId) {
-          this.session.mySeat = 0;
-        } else if (
-          this.session.guestClientId === this.clientId ||
-          this.session.mySeat === null
-        ) {
-          this.session.guestClientId = this.clientId;
-          this.session.mySeat = 1;
-        }
+        this.reconcilePeerRoles(
+          pkt.senderId,
+          pkt.hostClientId,
+          pkt.guestClientId,
+          pkt.state.seq
+        );
 
-        if (
-          pkt.state.seq > this.session.state.seq ||
-          (pkt.state.seq === this.session.state.seq &&
-            pkt.state.rackSeed !== this.session.state.rackSeed)
-        ) {
-          this.session.state = pkt.state;
-          this.session.pendingShot = null;
+        const localClean = this.getCleanAuthoritativeState();
+        const shouldAdoptRemote =
+          pkt.state.seq > localClean.seq ||
+          (pkt.state.seq === localClean.seq &&
+            this.session.hostClientId !== this.clientId &&
+            pkt.hostClientId === this.session.hostClientId &&
+            pkt.state.rackSeed !== localClean.rackSeed);
+
+        if (shouldAdoptRemote) {
+          // If we are currently animating this exact shot, let the visual animation finish
+          if (
+            this.session.pendingShot &&
+            this.session.pendingShot.settledState &&
+            this.session.pendingShot.settledState.seq === pkt.state.seq
+          ) {
+            this.session.pendingShot.settledState = cloneGameState(pkt.state);
+            this.save();
+          } else {
+            this.session.state = cloneGameState(pkt.state);
+            this.session.pendingShot = null;
+            this.save();
+            this.callbacks.onStateUpdated(this.session.state, 'remote');
+          }
+        } else {
           this.save();
-          this.callbacks.onStateUpdated(this.session.state, 'remote');
         }
-        this.save();
         this.notifyConnection();
         break;
       }
 
       case 'AIM_UPDATE': {
+        if (pkt.seat !== this.session.state.currentPlayer) break;
         this.callbacks.onRemoteAim({
           angle: pkt.angle,
           power: pkt.power,
@@ -646,18 +749,32 @@ export class MultiplayerCoordinator {
       }
 
       case 'SHOT_FIRED': {
+        const localClean = this.getCleanAuthoritativeState();
+        if (pkt.settledState.seq <= localClean.seq) break;
+
+        // Persist pendingShot on receiver too so mid-shot tab close & reopen recovers deterministically
+        this.session.pendingShot = {
+          baseState: cloneGameState(this.session.state),
+          cueX: pkt.cueX,
+          cueY: pkt.cueY,
+          strike: { ...pkt.strike },
+          settledState: cloneGameState(pkt.settledState),
+        };
+        this.save();
+
         this.callbacks.onRemoteShot({
           cueX: pkt.cueX,
           cueY: pkt.cueY,
           strike: pkt.strike,
-          settledState: pkt.settledState,
+          settledState: cloneGameState(pkt.settledState),
         });
         break;
       }
 
       case 'NEW_GAME': {
-        if (pkt.state.seq >= this.session.state.seq) {
-          this.session.state = pkt.state;
+        const localClean = this.getCleanAuthoritativeState();
+        if (pkt.state.seq >= localClean.seq) {
+          this.session.state = cloneGameState(pkt.state);
           this.session.pendingShot = null;
           this.save();
           this.callbacks.onStateUpdated(this.session.state, 'remote');
@@ -668,7 +785,14 @@ export class MultiplayerCoordinator {
   }
 
   private save(): void {
-    savePersistedSession(this.session);
+    if (this.session.pendingShot) {
+      savePersistedSession({
+        ...this.session,
+        state: this.session.pendingShot.baseState,
+      });
+    } else {
+      savePersistedSession(this.session);
+    }
   }
 
   private notifyConnection(): void {
@@ -680,14 +804,22 @@ export class MultiplayerCoordinator {
   }
 
   private updateUrlRoomParam(code: string | null): void {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    if (code) {
-      url.searchParams.set('room', code);
-    } else {
-      url.searchParams.delete('room');
+    if (typeof window === 'undefined' || !window.location || !window.history) return;
+    try {
+      const url = new URL(window.location.href);
+      if (code) {
+        url.searchParams.set('room', code);
+      } else {
+        url.searchParams.delete('room');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // Ignore in non-browser test environments
     }
-    window.history.replaceState({}, '', url.toString());
+  }
+
+  public dispose(): void {
+    this.disconnectTransports();
   }
 
   private disconnectTransports(): void {

@@ -1,10 +1,12 @@
 import {
   BALL_DIAMETER,
   BALL_RADIUS,
+  CORNER_JAW_OFFSET,
   FOOT_SPOT,
   HEAD_SPOT,
   HEAD_STRING_X,
   POCKETS,
+  SIDE_JAW_HALF_WIDTH,
   TABLE_LENGTH,
   TABLE_WIDTH,
 } from '../physics/constants';
@@ -33,6 +35,14 @@ export interface GameState {
   statusMessage: string;
   lastFoulReason: string | null;
   shotCount: number;
+}
+
+export function cloneGameState(state: GameState): GameState {
+  return {
+    ...state,
+    balls: cloneBalls(state.balls),
+    playerGroups: [state.playerGroups[0], state.playerGroups[1]],
+  };
 }
 
 export function getBallGroup(ballId: number): BallGroup | 'eight' | 'cue' {
@@ -652,16 +662,50 @@ export function computeAimPreview(
     }
   }
 
-  // 2. Check cushion wall distance if no ball hit before wall
+  // 2. Check cushion wall distance if no ball hit before wall, respecting pocket openings
   const minX = BALL_RADIUS;
   const maxX = TABLE_LENGTH - BALL_RADIUS;
   const minY = BALL_RADIUS;
   const maxY = TABLE_WIDTH - BALL_RADIUS;
 
-  if (dx > 1e-6) minT = Math.min(minT, (maxX - cueBall.x) / dx);
-  if (dx < -1e-6) minT = Math.min(minT, (minX - cueBall.x) / dx);
-  if (dy > 1e-6) minT = Math.min(minT, (maxY - cueBall.y) / dy);
-  if (dy < -1e-6) minT = Math.min(minT, (minY - cueBall.y) / dy);
+  const isOnVerticalRail = (y: number) =>
+    y >= CORNER_JAW_OFFSET && y <= TABLE_WIDTH - CORNER_JAW_OFFSET;
+  const isOnHorizontalRail = (x: number) =>
+    (x >= CORNER_JAW_OFFSET && x <= 50 - SIDE_JAW_HALF_WIDTH) ||
+    (x >= 50 + SIDE_JAW_HALF_WIDTH && x <= TABLE_LENGTH - CORNER_JAW_OFFSET);
+
+  if (dx > 1e-6) {
+    const tRail = (maxX - cueBall.x) / dx;
+    if (tRail > 0) {
+      const yAtRail = cueBall.y + dy * tRail;
+      const tStop = isOnVerticalRail(yAtRail) ? tRail : (TABLE_LENGTH + 1.0 - cueBall.x) / dx;
+      minT = Math.min(minT, Math.max(0, tStop));
+    }
+  }
+  if (dx < -1e-6) {
+    const tRail = (minX - cueBall.x) / dx;
+    if (tRail > 0) {
+      const yAtRail = cueBall.y + dy * tRail;
+      const tStop = isOnVerticalRail(yAtRail) ? tRail : (-1.0 - cueBall.x) / dx;
+      minT = Math.min(minT, Math.max(0, tStop));
+    }
+  }
+  if (dy > 1e-6) {
+    const tRail = (maxY - cueBall.y) / dy;
+    if (tRail > 0) {
+      const xAtRail = cueBall.x + dx * tRail;
+      const tStop = isOnHorizontalRail(xAtRail) ? tRail : (TABLE_WIDTH + 1.0 - cueBall.y) / dy;
+      minT = Math.min(minT, Math.max(0, tStop));
+    }
+  }
+  if (dy < -1e-6) {
+    const tRail = (minY - cueBall.y) / dy;
+    if (tRail > 0) {
+      const xAtRail = cueBall.x + dx * tRail;
+      const tStop = isOnHorizontalRail(xAtRail) ? tRail : (-1.0 - cueBall.y) / dy;
+      minT = Math.min(minT, Math.max(0, tStop));
+    }
+  }
 
   // If wall was closer than hitBall, clear hitBall
   if (hitBall) {
