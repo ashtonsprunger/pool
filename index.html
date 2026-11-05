@@ -7,7 +7,13 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="theme-color" content="#0F1419" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>8-Ball Pool</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -37,6 +43,10 @@
         <button class="room-btn" id="room-btn" type="button" aria-label="Multiplayer & Room">
           <span class="conn-dot" id="conn-dot"></span>
           <span id="room-btn-label">Multiplayer</span>
+        </button>
+
+        <button class="install-btn hidden" id="install-app-btn" type="button" aria-label="Install App">
+          Install App
         </button>
       </header>
 

@@ -46,6 +46,7 @@ const statusChip = document.getElementById('status-chip') as HTMLElement;
 const roomBtn = document.getElementById('room-btn') as HTMLButtonElement;
 const connDot = document.getElementById('conn-dot') as HTMLElement;
 const roomBtnLabel = document.getElementById('room-btn-label') as HTMLElement;
+const installAppBtn = document.getElementById('install-app-btn') as HTMLButtonElement;
 
 const winnerBanner = document.getElementById('winner-banner') as HTMLElement;
 const winnerTitle = document.getElementById('winner-title') as HTMLElement;
@@ -899,3 +900,61 @@ function animate(now: number): void {
 autoOrientAimTowardLegalTarget();
 syncHud();
 requestAnimationFrame(animate);
+
+// Progressive Web App (PWA) Service Worker & Android Install Prompt
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
+let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
+let autoPromptAttempted = false;
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
+window.addEventListener('beforeinstallprompt', (ev) => {
+  deferredInstallPrompt = ev as BeforeInstallPromptEvent;
+  installAppBtn.classList.remove('hidden');
+});
+
+async function triggerInstallPrompt(): Promise<void> {
+  if (!deferredInstallPrompt) return;
+  const promptEvent = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  try {
+    await promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    if (choice.outcome === 'accepted') {
+      installAppBtn.classList.add('hidden');
+    } else {
+      installAppBtn.classList.remove('hidden');
+    }
+  } catch {
+    // Ignore if already used
+  }
+}
+
+installAppBtn.addEventListener('click', () => {
+  triggerInstallPrompt();
+});
+
+// Trigger Android native install prompt on first user tap if browser captured beforeinstallprompt
+window.addEventListener(
+  'pointerup',
+  () => {
+    if (deferredInstallPrompt && !autoPromptAttempted) {
+      autoPromptAttempted = true;
+      triggerInstallPrompt();
+    }
+  },
+  { passive: true }
+);
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  installAppBtn.classList.add('hidden');
+});

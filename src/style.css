@@ -171,6 +171,22 @@ body {
   background: var(--m3-surface-highest);
 }
 
+.install-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  padding: 0 13px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: var(--m3-primary);
+  color: var(--m3-on-primary);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 .conn-dot {
   width: 8px;
   height: 8px;
