@@ -88,21 +88,26 @@ let lastFrameTime = performance.now();
 // Pointer Interaction State
 let isDraggingCueBall = false;
 let isAimingOnCanvas = false;
+let isPullingPower = false;
+let isDraggingSpin = false;
 let lastAimPointerAngle = 0;
 let lastAimBroadcastAt = 0;
+let coordinator!: MultiplayerCoordinator;
 
 // Parse initial URL ?room=CODE
 const urlParams = new URLSearchParams(window.location.search);
 const initialRoomParam = urlParams.get('room');
 
-const coordinator = new MultiplayerCoordinator(initialRoomParam, {
+coordinator = new MultiplayerCoordinator(initialRoomParam, {
   onStateUpdated: (_newState) => {
+    if (!coordinator) return;
     isSimulating = false;
     pendingSettledStateFromRemote = null;
     autoOrientAimTowardLegalTarget();
     syncHud();
   },
   onRemoteAim: (aim) => {
+    if (!coordinator) return;
     if (!isSimulating && !coordinator.isMyTurn()) {
       aimAngle = aim.angle;
       pullBackPower = aim.power;
@@ -124,6 +129,7 @@ const coordinator = new MultiplayerCoordinator(initialRoomParam, {
     }
   },
   onRemoteShot: (shot) => {
+    if (!coordinator) return;
     const state = coordinator.getState();
     const cueBall = state.balls.find((b) => b.id === 0);
     if (cueBall) {
@@ -139,6 +145,7 @@ const coordinator = new MultiplayerCoordinator(initialRoomParam, {
     syncHud();
   },
   onConnectionChanged: () => {
+    if (!coordinator) return;
     syncHud();
   },
 });
@@ -387,8 +394,6 @@ canvas.addEventListener('pointerup', endCanvasPointer);
 canvas.addEventListener('pointercancel', endCanvasPointer);
 
 // Power Slider Events (Pull-back to Shoot)
-let isPullingPower = false;
-
 function updatePowerUi(power: number): void {
   const pct = Math.round(power * 100);
   powerFill.style.width = `${pct}%`;
@@ -511,7 +516,6 @@ spinResetBtn.addEventListener('click', () => {
   maybeBroadcastAim();
 });
 
-let isDraggingSpin = false;
 const handleSpinPadPointer = (ev: PointerEvent) => {
   const rect = spinPad.getBoundingClientRect();
   const radius = rect.width * 0.5;

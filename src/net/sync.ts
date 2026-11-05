@@ -209,7 +209,6 @@ export function savePersistedSession(session: PersistedSession): void {
 
 const MQTT_BROKERS = [
   'wss://broker.emqx.io:8084/mqtt',
-  'wss://broker.hivemq.com:8884/mqtt',
 ];
 
 export class MultiplayerCoordinator {
@@ -217,6 +216,7 @@ export class MultiplayerCoordinator {
   private session: PersistedSession;
   private callbacks: SyncCallbacks;
   private seenMsgIds = new Set<string>();
+  private isReady = false;
 
   // Transports
   private bc: BroadcastChannel | null = null;
@@ -241,6 +241,13 @@ export class MultiplayerCoordinator {
     } else {
       this.save();
     }
+
+    this.isReady = true;
+    queueMicrotask(() => {
+      if (this.isReady) {
+        this.notifyConnection();
+      }
+    });
   }
 
   private readonly disableNetwork: boolean;
@@ -672,15 +679,23 @@ export class MultiplayerCoordinator {
           (pkt.state.seq === localClean.seq &&
             this.session.hostClientId !== this.clientId &&
             pkt.senderId === this.session.hostClientId &&
-            pkt.state.rackSeed !== localClean.rackSeed);
+            (pkt.state.rackSeed !== localClean.rackSeed ||
+              pkt.state.updatedAt > localClean.updatedAt));
 
         if (shouldAdoptRemote) {
           this.session.state = cloneGameState(pkt.state);
           this.session.pendingShot = null;
           this.save();
           this.callbacks.onStateUpdated(this.session.state, 'reconnect');
-        } else if (this.session.hostClientId) {
-          // Reply with authoritative state
+        }
+
+        // Reply with SYNC_STATE when we have an authoritative state or newly reconciled seat assignment
+        if (
+          this.session.hostClientId &&
+          (!shouldAdoptRemote ||
+            this.session.guestClientId !== pkt.guestClientId ||
+            this.session.hostClientId !== pkt.hostClientId)
+        ) {
           const replyState = this.getCleanAuthoritativeState();
           this.broadcast({
             type: 'SYNC_STATE',
@@ -711,7 +726,8 @@ export class MultiplayerCoordinator {
           (pkt.state.seq === localClean.seq &&
             this.session.hostClientId !== this.clientId &&
             pkt.hostClientId === this.session.hostClientId &&
-            pkt.state.rackSeed !== localClean.rackSeed);
+            (pkt.state.rackSeed !== localClean.rackSeed ||
+              pkt.state.updatedAt > localClean.updatedAt));
 
         if (shouldAdoptRemote) {
           // If we are currently animating this exact shot, let the visual animation finish
@@ -796,6 +812,7 @@ export class MultiplayerCoordinator {
   }
 
   private notifyConnection(): void {
+    if (!this.isReady) return;
     this.callbacks.onConnectionChanged({
       roomCode: this.session.roomCode,
       mySeat: this.session.mySeat,
@@ -819,6 +836,7 @@ export class MultiplayerCoordinator {
   }
 
   public dispose(): void {
+    this.isReady = false;
     this.disconnectTransports();
   }
 

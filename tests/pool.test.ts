@@ -604,4 +604,31 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
       coord.dispose();
     }
   });
+
+  it('does not throw TDZ ReferenceError when constructed with an initial room code whose callback accesses the instance', async () => {
+    let notifiedRoom: string | null = null;
+    const coord = new MultiplayerCoordinator(
+      'TDZR',
+      {
+        onStateUpdated: () => {
+          expect(coord.getState()).toBeDefined();
+        },
+        onRemoteAim: () => {},
+        onRemoteShot: () => {},
+        onConnectionChanged: () => {
+          // Accessing `coord` inside onConnectionChanged previously threw:
+          // ReferenceError: Cannot access 'coord' before initialization
+          notifiedRoom = coord.getRoomCode();
+        },
+      },
+      { clientId: 'TdzTestClient', disableNetwork: true }
+    );
+
+    try {
+      await Promise.resolve();
+      expect(notifiedRoom).toBe('TDZR');
+    } finally {
+      coord.dispose();
+    }
+  });
 });
