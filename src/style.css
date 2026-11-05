@@ -488,6 +488,151 @@ body {
   color: var(--m3-text-muted);
 }
 
+/* Fine Angle Wheel & Shoot Button (Cheat Mode) */
+.fine-aim-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.fine-step-btn {
+  width: 28px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--m3-outline);
+  background: var(--m3-surface-high);
+  color: var(--m3-text);
+  font-size: 1.05rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fine-step-btn:active {
+  background: var(--m3-surface-highest);
+}
+
+.fine-aim-wheel {
+  position: relative;
+  width: 112px;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--m3-outline);
+  background: var(--m3-surface);
+  overflow: hidden;
+  cursor: ew-resize;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fine-aim-ticks {
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(125, 211, 252, 0.28) 0px,
+    rgba(125, 211, 252, 0.28) 1.5px,
+    transparent 1.5px,
+    transparent 9px
+  );
+  pointer-events: none;
+}
+
+.fine-aim-label {
+  position: relative;
+  z-index: 1;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--m3-primary);
+  background: rgba(15, 20, 25, 0.72);
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  pointer-events: none;
+}
+
+.shoot-btn {
+  flex: 0 0 auto;
+  height: 38px;
+  padding: 0 18px;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(125, 211, 252, 0.25);
+}
+
+/* Material 3 Toggle Switch Row */
+.m3-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--m3-surface-high);
+  border: 1px solid var(--m3-outline);
+  cursor: pointer;
+}
+
+.m3-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.m3-switch-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--m3-text);
+}
+
+.m3-switch-sub {
+  font-size: 0.68rem;
+  color: var(--m3-text-muted);
+}
+
+.m3-switch-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.m3-switch-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--m3-surface-highest);
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+  flex-shrink: 0;
+}
+
+.m3-switch-thumb {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--m3-text-muted);
+  transform: translateY(-50%);
+  transition: left 0.18s ease, background-color 0.18s ease;
+}
+
+.m3-switch-input:checked + .m3-switch-track {
+  background: var(--m3-primary);
+  border-color: var(--m3-primary);
+}
+
+.m3-switch-input:checked + .m3-switch-track .m3-switch-thumb {
+  left: 22px;
+  background: var(--m3-on-primary);
+}
+
 @media (max-width: 600px) {
   .hud-bar {
     flex-wrap: wrap;
@@ -503,5 +648,15 @@ body {
     max-width: 100%;
     padding: 5px 10px;
     font-size: 0.74rem;
+  }
+  .control-dock {
+    gap: 6px;
+    padding: 4px 4px;
+  }
+  .fine-aim-wheel {
+    width: 82px;
+  }
+  .shoot-btn {
+    padding: 0 13px;
   }
 }

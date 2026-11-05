@@ -1,7 +1,9 @@
 import {
   BallGroup,
+  CheatPreview,
   GameState,
   computeAimPreview,
+  computeCheatPreview,
   evaluateShotOutcome,
   findNearestValidCueBallPosition,
   getRemainingBallsForGroup,
@@ -52,10 +54,16 @@ const rematchBtn = document.getElementById('rematch-btn') as HTMLButtonElement;
 const controlDock = document.getElementById('control-dock') as HTMLElement;
 const spinTrigger = document.getElementById('spin-trigger') as HTMLButtonElement;
 const spinDotMini = document.getElementById('spin-dot-mini') as HTMLElement;
+const fineAimWrap = document.getElementById('fine-aim-wrap') as HTMLElement;
+const fineAimLeft = document.getElementById('fine-aim-left') as HTMLButtonElement;
+const fineAimRight = document.getElementById('fine-aim-right') as HTMLButtonElement;
+const fineAimWheel = document.getElementById('fine-aim-wheel') as HTMLElement;
+const fineAimTicks = document.getElementById('fine-aim-ticks') as HTMLElement;
 const powerTrack = document.getElementById('power-track') as HTMLElement;
 const powerFill = document.getElementById('power-fill') as HTMLElement;
 const powerThumb = document.getElementById('power-thumb') as HTMLElement;
 const powerHint = document.getElementById('power-hint') as HTMLElement;
+const shootBtn = document.getElementById('shoot-btn') as HTMLButtonElement;
 
 // Modals
 const spinModal = document.getElementById('spin-modal') as HTMLElement;
@@ -66,6 +74,7 @@ const spinDoneBtn = document.getElementById('spin-done-btn') as HTMLButtonElemen
 
 const roomModal = document.getElementById('room-modal') as HTMLElement;
 const modalRoomStatus = document.getElementById('modal-room-status') as HTMLElement;
+const cheatModeToggle = document.getElementById('cheat-mode-toggle') as HTMLInputElement;
 const copyLinkBtn = document.getElementById('copy-link-btn') as HTMLButtonElement;
 const leaveRoomBtn = document.getElementById('leave-room-btn') as HTMLButtonElement;
 const joinRoomForm = document.getElementById('join-room-form') as HTMLFormElement;
@@ -90,8 +99,13 @@ let isDraggingCueBall = false;
 let isAimingOnCanvas = false;
 let isPullingPower = false;
 let isDraggingSpin = false;
+let isDraggingFineAim = false;
+let lastFineAimX = 0;
+let fineTickOffset = 0;
 let lastAimPointerAngle = 0;
 let lastAimBroadcastAt = 0;
+let cachedCheatKey = '';
+let cachedCheatPreview: CheatPreview | null = null;
 let coordinator!: MultiplayerCoordinator;
 
 // Parse initial URL ?room=CODE
@@ -113,6 +127,8 @@ coordinator = new MultiplayerCoordinator(initialRoomParam, {
       pullBackPower = aim.power;
       spinX = aim.spinX;
       spinY = aim.spinY;
+      updatePowerUi(pullBackPower);
+      updateSpinUi();
       const state = coordinator.getState();
       const cueBall = state.balls.find((b) => b.id === 0);
       if (state.ballInHand && cueBall && !cueBall.pocketed) {
@@ -168,6 +184,13 @@ resizeCanvas();
  */
 function autoOrientAimTowardLegalTarget(): void {
   const state = coordinator.getState();
+  if (state.cheatMode && pullBackPower < 0.05) {
+    pullBackPower = state.isBreakShot ? 0.72 : 0.42;
+  } else if (!state.cheatMode) {
+    pullBackPower = 0;
+  }
+  updatePowerUi(pullBackPower);
+
   const cueBall = state.balls.find((b) => b.id === 0);
   if (!cueBall || cueBall.pocketed) return;
 
@@ -278,15 +301,27 @@ function syncHud(): void {
   statusChip.textContent = state.statusMessage;
   statusChip.classList.toggle('foul', state.lastFoulReason !== null && state.winner === null);
 
-  // Room button
+  // Room button & Cheat Mode UI state
+  const isCheat = Boolean(state.cheatMode);
+  cheatModeToggle.checked = isCheat;
+  fineAimWrap.classList.toggle('hidden', !isCheat);
+  shootBtn.classList.toggle('hidden', !isCheat);
+  if (isCheat && pullBackPower < 0.05 && !isSimulating) {
+    pullBackPower = state.isBreakShot ? 0.72 : 0.42;
+  }
+  updatePowerUi(pullBackPower);
+
   if (!roomCode) {
     connDot.className = 'conn-dot';
-    roomBtnLabel.textContent = 'Multiplayer';
-    modalRoomStatus.textContent = 'Mode: Local Pass & Play';
+    roomBtnLabel.textContent = isCheat ? 'Multiplayer · Cheat' : 'Multiplayer';
+    modalRoomStatus.textContent = isCheat
+      ? 'Mode: Local Pass & Play (Cheat Mode)'
+      : 'Mode: Local Pass & Play';
     leaveRoomBtn.classList.add('hidden');
   } else {
     connDot.className = peerOnline ? 'conn-dot connected' : 'conn-dot waiting';
-    roomBtnLabel.textContent = isSpectator ? `Room ${roomCode} (View)` : `Room ${roomCode}`;
+    const baseRoomLabel = isSpectator ? `Room ${roomCode} (View)` : `Room ${roomCode}`;
+    roomBtnLabel.textContent = isCheat ? `${baseRoomLabel} · Cheat` : baseRoomLabel;
     modalRoomStatus.textContent = isSpectator
       ? `Room ${roomCode} — Spectating`
       : peerOnline
@@ -393,14 +428,17 @@ const endCanvasPointer = () => {
 canvas.addEventListener('pointerup', endCanvasPointer);
 canvas.addEventListener('pointercancel', endCanvasPointer);
 
-// Power Slider Events (Pull-back to Shoot)
+// Power Slider Events (Pull-back to Shoot in normal mode; Set Power in Cheat Mode)
 function updatePowerUi(power: number): void {
+  const isCheat = coordinator ? Boolean(coordinator.getState().cheatMode) : false;
   const pct = Math.round(power * 100);
   powerFill.style.width = `${pct}%`;
   const trackWidth = powerTrack.clientWidth || 260;
   const maxLeft = Math.max(6, trackWidth - 32);
   powerThumb.style.left = `${6 + power * (maxLeft - 6)}px`;
-  if (power <= 0.03) {
+  if (isCheat) {
+    powerHint.textContent = `Power: ${Math.max(5, pct)}%`;
+  } else if (power <= 0.03) {
     powerHint.textContent = 'Pull to shoot';
   } else {
     powerHint.textContent = `${pct}% — Release to shoot`;
@@ -417,14 +455,17 @@ powerTrack.addEventListener('pointerdown', (ev) => {
   if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
   isPullingPower = true;
   powerTrack.setPointerCapture(ev.pointerId);
-  pullBackPower = computePowerFromPointer(ev.clientX);
+  const rawPower = computePowerFromPointer(ev.clientX);
+  pullBackPower = state.cheatMode ? clamp(rawPower, 0.05, 1.0) : rawPower;
   updatePowerUi(pullBackPower);
   maybeBroadcastAim();
 });
 
 powerTrack.addEventListener('pointermove', (ev) => {
   if (!isPullingPower) return;
-  pullBackPower = computePowerFromPointer(ev.clientX);
+  const state = coordinator.getState();
+  const rawPower = computePowerFromPointer(ev.clientX);
+  pullBackPower = state.cheatMode ? clamp(rawPower, 0.05, 1.0) : rawPower;
   updatePowerUi(pullBackPower);
   maybeBroadcastAim();
 });
@@ -432,6 +473,16 @@ powerTrack.addEventListener('pointermove', (ev) => {
 const finishPowerPull = () => {
   if (!isPullingPower) return;
   isPullingPower = false;
+  const state = coordinator.getState();
+
+  // In Cheat Mode, releasing the power slider keeps the selected power; player taps Shoot to fire
+  if (state.cheatMode) {
+    pullBackPower = clamp(pullBackPower, 0.05, 1.0);
+    updatePowerUi(pullBackPower);
+    maybeBroadcastAim();
+    return;
+  }
+
   const finalPower = pullBackPower;
   pullBackPower = 0;
   updatePowerUi(0);
@@ -451,9 +502,65 @@ const finishPowerPull = () => {
 powerTrack.addEventListener('pointerup', finishPowerPull);
 powerTrack.addEventListener('pointercancel', () => {
   isPullingPower = false;
-  pullBackPower = 0;
-  updatePowerUi(0);
+  const state = coordinator.getState();
+  if (!state.cheatMode) {
+    pullBackPower = 0;
+  }
+  updatePowerUi(pullBackPower);
 });
+
+// Shoot Button (Cheat Mode)
+shootBtn.addEventListener('click', () => {
+  const state = coordinator.getState();
+  if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
+  const finalPower = clamp(pullBackPower || 0.42, 0.05, 1.0);
+  executeShot({
+    angle: aimAngle,
+    power: finalPower,
+    spinX,
+    spinY,
+  });
+});
+
+// Fine Angle Adjustment Controls (Cheat Mode)
+function nudgeFineAngle(deltaRad: number, tickPx: number): void {
+  const state = coordinator.getState();
+  if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
+  aimAngle += deltaRad;
+  fineTickOffset = (fineTickOffset + tickPx) % 36;
+  fineAimTicks.style.backgroundPositionX = `${fineTickOffset}px`;
+  maybeBroadcastAim();
+}
+
+fineAimLeft.addEventListener('click', () => {
+  nudgeFineAngle(-0.0014, -3);
+});
+
+fineAimRight.addEventListener('click', () => {
+  nudgeFineAngle(0.0014, 3);
+});
+
+fineAimWheel.addEventListener('pointerdown', (ev) => {
+  const state = coordinator.getState();
+  if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
+  isDraggingFineAim = true;
+  lastFineAimX = ev.clientX;
+  fineAimWheel.setPointerCapture(ev.pointerId);
+});
+
+fineAimWheel.addEventListener('pointermove', (ev) => {
+  if (!isDraggingFineAim) return;
+  const dx = ev.clientX - lastFineAimX;
+  lastFineAimX = ev.clientX;
+  // 0.0011 rad (~0.063 deg) per pixel of drag for ultra-precise angle control
+  nudgeFineAngle(dx * 0.0011, dx);
+});
+
+const endFineAimDrag = () => {
+  isDraggingFineAim = false;
+};
+fineAimWheel.addEventListener('pointerup', endFineAimDrag);
+fineAimWheel.addEventListener('pointercancel', endFineAimDrag);
 
 /**
  * Executes a shot on the local table, pre-computing the deterministic settled outcome
@@ -554,10 +661,18 @@ closeModalBtn.addEventListener('click', () => {
   roomModal.classList.add('hidden');
 });
 
+cheatModeToggle.addEventListener('change', () => {
+  coordinator.setCheatMode(cheatModeToggle.checked);
+  autoOrientAimTowardLegalTarget();
+  syncHud();
+});
+
 copyLinkBtn.addEventListener('click', async () => {
   let code = coordinator.getRoomCode();
   if (!code) {
-    code = coordinator.createMultiplayerRoom();
+    code = coordinator.createMultiplayerRoom(cheatModeToggle.checked);
+  } else {
+    coordinator.setCheatMode(cheatModeToggle.checked);
   }
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${code}`;
   try {
@@ -592,7 +707,7 @@ joinRoomForm.addEventListener('submit', (ev) => {
 const handleStartNewRack = () => {
   isSimulating = false;
   pendingSettledStateFromRemote = null;
-  coordinator.startNewGame();
+  coordinator.startNewGame(cheatModeToggle.checked);
   autoOrientAimTowardLegalTarget();
   roomModal.classList.add('hidden');
   syncHud();
@@ -606,6 +721,23 @@ for (const backdrop of [spinModal, roomModal]) {
   backdrop.addEventListener('click', (ev) => {
     if (ev.target === backdrop) backdrop.classList.add('hidden');
   });
+}
+
+function getMemoizedCheatPreview(state: GameState): CheatPreview | null {
+  const cueBall = state.balls.find((b) => b.id === 0);
+  if (!cueBall || cueBall.pocketed) return null;
+  const effectivePower = clamp(pullBackPower || (state.isBreakShot ? 0.72 : 0.42), 0.05, 1.0);
+  const key = `${state.seq}_${cueBall.x.toFixed(4)}_${cueBall.y.toFixed(4)}_${aimAngle.toFixed(6)}_${effectivePower.toFixed(4)}_${spinX.toFixed(3)}_${spinY.toFixed(3)}`;
+  if (key !== cachedCheatKey || !cachedCheatPreview) {
+    cachedCheatKey = key;
+    cachedCheatPreview = computeCheatPreview(state, {
+      angle: aimAngle,
+      power: effectivePower,
+      spinX,
+      spinY,
+    });
+  }
+  return cachedCheatPreview;
 }
 
 // Main 60-120fps Render & 240Hz Fixed-Timestep Physics Loop
@@ -636,7 +768,9 @@ function animate(now: number): void {
   }
 
   const showAim = !isSimulating && state.winner === null;
-  const aimPreview = showAim ? computeAimPreview(state, aimAngle) : null;
+  const isCheat = Boolean(state.cheatMode);
+  const aimPreview = showAim && !isCheat ? computeAimPreview(state, aimAngle) : null;
+  const cheatPreview = showAim && isCheat ? getMemoizedCheatPreview(state) : null;
 
   renderPoolTable(
     ctx,
@@ -651,7 +785,8 @@ function animate(now: number): void {
       showAim,
       isDraggingCueBall,
     },
-    aimPreview
+    aimPreview,
+    cheatPreview
   );
 
   requestAnimationFrame(animate);

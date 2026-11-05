@@ -1,4 +1,4 @@
-import { AimPreview, GameState } from '../game/rules';
+import { AimPreview, CheatPreview, GameState } from '../game/rules';
 import { TableViewport, tableToScreen } from '../game/viewport';
 import {
   BALL_COLORS,
@@ -53,7 +53,8 @@ export function renderPoolTable(
   vp: TableViewport,
   state: GameState,
   input: RenderInputState,
-  aimPreview: AimPreview | null
+  aimPreview: AimPreview | null,
+  cheatPreview: CheatPreview | null = null
 ): void {
   const dpr = window.devicePixelRatio || 1;
   ctx.save();
@@ -78,9 +79,13 @@ export function renderPoolTable(
   drawPlayingSurfaceAndMarkings(ctx, state);
   drawPockets(ctx);
 
-  // Draw Aim Preview (below balls/cue so balls sit cleanly on top)
-  if (input.showAim && aimPreview && state.winner === null) {
-    drawAimGuide(ctx, aimPreview, vp.isPortrait);
+  // Draw Aim Preview or Cheat Mode Trajectories (below balls/cue so balls sit cleanly on top)
+  if (input.showAim && state.winner === null) {
+    if (cheatPreview) {
+      drawCheatPreviewTrajectories(ctx, cheatPreview);
+    } else if (aimPreview) {
+      drawAimGuide(ctx, aimPreview, vp.isPortrait);
+    }
   }
 
   // Draw Ball-in-Hand cue ball halo if active
@@ -89,11 +94,16 @@ export function renderPoolTable(
     drawBallInHandHalo(ctx, cueBall, input.isDraggingCueBall);
   }
 
-  // Draw all non-pocketed balls
+  // Draw all non-pocketed balls at their current positions
   for (const b of state.balls) {
     if (!b.pocketed) {
       drawBall(ctx, b, vp.isPortrait);
     }
+  }
+
+  // Draw Cheat Mode End-State Ghost Balls
+  if (input.showAim && cheatPreview && state.winner === null) {
+    drawCheatPreviewEndBalls(ctx, cheatPreview, vp.isPortrait);
   }
 
   // Draw Cue Stick when aiming
@@ -451,6 +461,86 @@ function drawAimGuide(
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
     ctx.lineWidth = 0.11;
     ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawCheatPreviewTrajectories(
+  ctx: CanvasRenderingContext2D,
+  cheatPreview: CheatPreview
+): void {
+  ctx.save();
+
+  for (const eb of cheatPreview.endBalls) {
+    if (!eb.moved || eb.path.length < 2) continue;
+
+    const isCue = eb.id === 0;
+    const isCueFoul = isCue && (eb.pocketedThisShot || cheatPreview.isFoul);
+    const baseColor = BALL_COLORS[eb.id] || '#FFFFFF';
+
+    ctx.beginPath();
+    ctx.moveTo(eb.path[0].x, eb.path[0].y);
+    for (let i = 1; i < eb.path.length; i++) {
+      ctx.lineTo(eb.path[i].x, eb.path[i].y);
+    }
+
+    ctx.strokeStyle = isCueFoul
+      ? 'rgba(248, 113, 113, 0.82)'
+      : isCue
+      ? 'rgba(255, 255, 255, 0.65)'
+      : `${baseColor}BB`;
+    ctx.lineWidth = isCue ? 0.14 : 0.12;
+    ctx.setLineDash(isCue ? [0.45, 0.3] : [0.35, 0.28]);
+    ctx.stroke();
+
+    // Highlight pocket ring if pocketed on this shot
+    if (eb.pocketedThisShot && eb.pocketId !== null && POCKETS[eb.pocketId]) {
+      const pk = POCKETS[eb.pocketId];
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(pk.renderX, pk.renderY, pk.renderRadius * 0.92, 0, Math.PI * 2);
+      const isBadPocket = eb.id === 0 || (eb.id === 8 && cheatPreview.isFoul);
+      ctx.strokeStyle = isBadPocket ? '#F87171' : '#4ADE80';
+      ctx.lineWidth = 0.22;
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawCheatPreviewEndBalls(
+  ctx: CanvasRenderingContext2D,
+  cheatPreview: CheatPreview,
+  isPortrait: boolean
+): void {
+  ctx.save();
+
+  for (const eb of cheatPreview.endBalls) {
+    if (!eb.moved) continue;
+
+    ctx.save();
+    ctx.globalAlpha = eb.pocketedThisShot ? 0.82 : 0.68;
+    drawBall(ctx, eb.ballState, isPortrait);
+    ctx.restore();
+
+    // Crisp outline ring around the predicted final resting position
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(eb.endX, eb.endY, BALL_RADIUS + 0.1, 0, Math.PI * 2);
+    const isCueFoul = eb.id === 0 && (eb.pocketedThisShot || cheatPreview.isFoul);
+    ctx.strokeStyle = isCueFoul
+      ? '#F87171'
+      : eb.pocketedThisShot
+      ? '#4ADE80'
+      : eb.id === 0
+      ? '#38BDF8'
+      : 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 0.14;
+    ctx.setLineDash([0.32, 0.22]);
+    ctx.stroke();
+    ctx.restore();
   }
 
   ctx.restore();

@@ -2,6 +2,7 @@ import {
   BALL_DIAMETER,
   BALL_RADIUS,
   CORNER_JAW_OFFSET,
+  FIXED_DT,
   FOOT_SPOT,
   HEAD_SPOT,
   HEAD_STRING_X,
@@ -12,9 +13,14 @@ import {
 } from '../physics/constants';
 import {
   BallState,
+  CueStrikeParams,
   ShotTelemetry,
+  applyCueStrike,
+  areBallsMoving,
   cloneBalls,
   createBall,
+  createInitialTelemetry,
+  stepPhysics,
 } from '../physics/engine';
 import { clamp } from '../physics/vector';
 
@@ -25,6 +31,7 @@ export interface GameState {
   seq: number;
   updatedAt: number;
   rackSeed: number;
+  cheatMode?: boolean;
   balls: BallState[];
   currentPlayer: PlayerIndex;
   playerGroups: [BallGroup | null, BallGroup | null];
@@ -140,11 +147,15 @@ export function createRack(seed: number = 1337): BallState[] {
   return balls;
 }
 
-export function createInitialGameState(seed: number = Date.now() & 0x7fffffff): GameState {
+export function createInitialGameState(
+  seed: number = ((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) & 0x7fffffff) || 1,
+  cheatMode: boolean = false
+): GameState {
   return {
     seq: 1,
     updatedAt: Date.now(),
     rackSeed: seed,
+    cheatMode,
     balls: createRack(seed),
     currentPlayer: 0,
     playerGroups: [null, null],
@@ -763,5 +774,133 @@ export function computeAimPreview(
     targetDirY,
     tangentDirX,
     tangentDirY,
+  };
+}
+
+export interface BallTrajectoryPoint {
+  x: number;
+  y: number;
+}
+
+export interface CheatBallEndState {
+  id: number;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  moved: boolean;
+  pocketedThisShot: boolean;
+  pocketId: number | null;
+  path: BallTrajectoryPoint[];
+  ballState: BallState;
+}
+
+export interface CheatPreview {
+  endBalls: CheatBallEndState[];
+  outcome: GameState;
+  isFoul: boolean;
+  foulReason: string | null;
+}
+
+/**
+ * Simulates the entire shot deterministically with the given CueStrikeParams
+ * and returns the exact resting positions, trajectories, and rule evaluation of all balls.
+ */
+export function computeCheatPreview(
+  state: GameState,
+  strike: CueStrikeParams,
+  maxSteps: number = 240 * 25
+): CheatPreview {
+  const simBalls = cloneBalls(state.balls);
+  const startPositions = new Map<number, { x: number; y: number; wasPocketed: boolean }>();
+  const paths = new Map<number, BallTrajectoryPoint[]>();
+
+  for (const b of simBalls) {
+    startPositions.set(b.id, { x: b.x, y: b.y, wasPocketed: b.pocketed });
+    if (!b.pocketed) {
+      paths.set(b.id, [{ x: b.x, y: b.y }]);
+    }
+  }
+
+  const cueBall = simBalls.find((b) => b.id === 0);
+  if (cueBall && !cueBall.pocketed && strike.power > 0.01) {
+    applyCueStrike(cueBall, strike);
+  }
+
+  const telemetry = createInitialTelemetry();
+  let steps = 0;
+
+  while (steps < maxSteps && areBallsMoving(simBalls)) {
+    stepPhysics(simBalls, telemetry, FIXED_DT);
+    steps++;
+
+    if (steps % 4 === 0) {
+      for (const b of simBalls) {
+        const path = paths.get(b.id);
+        if (!path) continue;
+        const last = path[path.length - 1];
+        if (b.pocketed) {
+          if (b.pocketId !== null && POCKETS[b.pocketId]) {
+            const pk = POCKETS[b.pocketId];
+            if (Math.hypot(pk.x - last.x, pk.y - last.y) > 0.1) {
+              path.push({ x: pk.x, y: pk.y });
+            }
+          }
+        } else if (Math.hypot(b.x - last.x, b.y - last.y) > 0.35) {
+          path.push({ x: b.x, y: b.y });
+        }
+      }
+    }
+  }
+
+  if (steps >= maxSteps) {
+    for (const b of simBalls) {
+      b.vx = 0;
+      b.vy = 0;
+      b.wx = 0;
+      b.wy = 0;
+      b.wz = 0;
+    }
+  }
+
+  const endBalls: CheatBallEndState[] = [];
+  for (const b of simBalls) {
+    const start = startPositions.get(b.id)!;
+    if (start.wasPocketed) continue;
+
+    const path = paths.get(b.id) ?? [{ x: start.x, y: start.y }];
+    const pocketedThisShot = b.pocketed;
+    let endX = b.x;
+    let endY = b.y;
+    if (pocketedThisShot && b.pocketId !== null && POCKETS[b.pocketId]) {
+      endX = POCKETS[b.pocketId].renderX;
+      endY = POCKETS[b.pocketId].renderY;
+    }
+    const last = path[path.length - 1];
+    if (Math.hypot(endX - last.x, endY - last.y) > 0.05) {
+      path.push({ x: endX, y: endY });
+    }
+
+    const moved = pocketedThisShot || Math.hypot(endX - start.x, endY - start.y) > 0.08;
+    endBalls.push({
+      id: b.id,
+      startX: start.x,
+      startY: start.y,
+      endX,
+      endY,
+      moved,
+      pocketedThisShot,
+      pocketId: b.pocketId,
+      path,
+      ballState: { ...b, x: endX, y: endY },
+    });
+  }
+
+  const outcome = evaluateShotOutcome(state, simBalls, telemetry);
+  return {
+    endBalls,
+    outcome,
+    isFoul: outcome.lastFoulReason !== null,
+    foulReason: outcome.lastFoulReason,
   };
 }

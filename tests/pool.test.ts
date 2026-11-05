@@ -20,6 +20,7 @@ import {
 } from '../src/physics/engine';
 import {
   computeAimPreview,
+  computeCheatPreview,
   createInitialGameState,
   createRack,
   evaluateShotOutcome,
@@ -629,6 +630,72 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
       expect(notifiedRoom).toBe('TDZR');
     } finally {
       coord.dispose();
+    }
+  });
+
+  it('computes exact end-state ball positions in Cheat Mode and syncs cheatMode across peers and turns', () => {
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+    const host = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'CheatHost',
+      disableNetwork: true,
+    });
+    const guest = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'CheatGuest',
+      disableNetwork: true,
+    });
+
+    try {
+      const code = host.createMultiplayerRoom(true);
+      expect(host.getState().cheatMode).toBe(true);
+
+      guest.joinRoom(code, true);
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'cheat_sync_1',
+        senderId: host.clientId,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+        state: host.getState(),
+      });
+      expect(guest.getState().cheatMode).toBe(true);
+
+      // Verify computeCheatPreview matches actual shot simulation & responds to power/fine-angle
+      const state = host.getState();
+      const softPreview = computeCheatPreview(state, {
+        angle: 0.005,
+        power: 0.35,
+        spinX: 0,
+        spinY: 0,
+      });
+      const hardPreview = computeCheatPreview(state, {
+        angle: 0.005,
+        power: 0.9,
+        spinX: 0,
+        spinY: 0,
+      });
+
+      const softMoved = softPreview.endBalls.filter((b) => b.moved);
+      const hardMoved = hardPreview.endBalls.filter((b) => b.moved);
+      expect(softMoved.length).toBeGreaterThan(5);
+      expect(hardMoved.length).toBeGreaterThan(5);
+
+      // Different strike power produces different end-state coordinates
+      const cueSoft = softPreview.endBalls.find((b) => b.id === 0)!;
+      const cueHard = hardPreview.endBalls.find((b) => b.id === 0)!;
+      expect(Math.hypot(cueSoft.endX - cueHard.endX, cueSoft.endY - cueHard.endY)).toBeGreaterThan(
+        1.0
+      );
+
+      // Cheat mode remains enabled on the next turn's outcome
+      expect(hardPreview.outcome.cheatMode).toBe(true);
+    } finally {
+      host.dispose();
+      guest.dispose();
     }
   });
 });

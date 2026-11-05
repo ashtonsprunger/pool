@@ -62,7 +62,17 @@
           </span>
         </button>
 
-        <!-- Pull-back Cue Power Slider -->
+        <!-- Fine Angle Adjustment (Visible in Cheat Mode) -->
+        <div class="fine-aim-wrap hidden" id="fine-aim-wrap">
+          <button class="fine-step-btn" id="fine-aim-left" type="button" aria-label="Rotate aim counter-clockwise">‹</button>
+          <div class="fine-aim-wheel" id="fine-aim-wheel" role="slider" aria-label="Fine angle adjustment">
+            <div class="fine-aim-ticks" id="fine-aim-ticks"></div>
+            <span class="fine-aim-label">Fine Angle</span>
+          </div>
+          <button class="fine-step-btn" id="fine-aim-right" type="button" aria-label="Rotate aim clockwise">›</button>
+        </div>
+
+        <!-- Pull-back / Set Cue Power Slider -->
         <div class="power-track-wrap" id="power-track-wrap">
           <div class="power-track" id="power-track">
             <div class="power-fill" id="power-fill"></div>
@@ -70,6 +80,11 @@
             <span class="power-hint" id="power-hint">Pull to shoot</span>
           </div>
         </div>
+
+        <!-- Fire Shot Button (Visible in Cheat Mode) -->
+        <button class="m3-btn m3-btn-primary shoot-btn hidden" id="shoot-btn" type="button">
+          Shoot
+        </button>
       </footer>
 
       <!-- Cue Ball Spin Popover -->
@@ -92,6 +107,16 @@
         <div class="m3-sheet" role="dialog" aria-label="Multiplayer Room">
           <div class="sheet-section">
             <div class="room-code-display" id="modal-room-status">Local Pass &amp; Play</div>
+
+            <label class="m3-switch-row" for="cheat-mode-toggle">
+              <div class="m3-switch-text">
+                <span class="m3-switch-title">Cheat Mode</span>
+                <span class="m3-switch-sub">Full end-state ball preview &amp; fine aim</span>
+              </div>
+              <input type="checkbox" id="cheat-mode-toggle" class="m3-switch-input" />
+              <span class="m3-switch-track"><span class="m3-switch-thumb"></span></span>
+            </label>
+
             <div class="sheet-row">
               <button class="m3-btn m3-btn-primary" id="copy-link-btn" type="button">
                 Invite / Copy Link

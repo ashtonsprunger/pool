@@ -282,19 +282,37 @@ export class MultiplayerCoordinator {
     return this.session.state.currentPlayer === this.session.mySeat;
   }
 
-  public createMultiplayerRoom(): string {
+  public createMultiplayerRoom(cheatMode: boolean = false): string {
     const code = generateRoomCode();
     this.session = {
       roomCode: code,
       mySeat: 0,
       hostClientId: this.clientId,
       guestClientId: null,
-      state: createInitialGameState(),
+      state: createInitialGameState(undefined, cheatMode),
       pendingShot: null,
     };
     this.save();
     this.joinRoom(code, true);
     return code;
+  }
+
+  public setCheatMode(cheatMode: boolean): void {
+    if (Boolean(this.session.state.cheatMode) === cheatMode) return;
+    this.session.state.cheatMode = cheatMode;
+    this.session.state.seq += 1;
+    this.session.state.updatedAt = Date.now();
+    this.save();
+    if (this.session.roomCode && this.session.hostClientId) {
+      this.broadcast({
+        type: 'SYNC_STATE',
+        msgId: generateId(),
+        senderId: this.clientId,
+        hostClientId: this.session.hostClientId,
+        guestClientId: this.session.guestClientId,
+        state: cloneGameState(this.session.state),
+      });
+    }
   }
 
   public joinRoom(rawCode: string, resetIfNew: boolean = false): void {
@@ -520,8 +538,9 @@ export class MultiplayerCoordinator {
     });
   }
 
-  public startNewGame(): GameState {
-    const fresh = createInitialGameState();
+  public startNewGame(cheatMode?: boolean): GameState {
+    const useCheat = cheatMode !== undefined ? cheatMode : Boolean(this.session.state.cheatMode);
+    const fresh = createInitialGameState(undefined, useCheat);
     fresh.seq = this.session.state.seq + 1;
     this.session.state = fresh;
     this.session.pendingShot = null;
@@ -680,6 +699,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.senderId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
+              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode) ||
               pkt.state.updatedAt > localClean.updatedAt));
 
         if (shouldAdoptRemote) {
@@ -727,6 +747,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.hostClientId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
+              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode) ||
               pkt.state.updatedAt > localClean.updatedAt));
 
         if (shouldAdoptRemote) {
