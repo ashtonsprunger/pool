@@ -112,6 +112,8 @@ let lastAimPointerAngle = 0;
 let lastAimBroadcastAt = 0;
 let cachedCheatKey = '';
 let cachedCheatPreview: CheatPreview | null = null;
+let lastOrientedSeq = -1;
+let lastOrientedRackSeed = -1;
 let coordinator!: MultiplayerCoordinator;
 
 // Parse initial URL ?room=CODE
@@ -119,11 +121,13 @@ const urlParams = new URLSearchParams(window.location.search);
 const initialRoomParam = urlParams.get('room');
 
 coordinator = new MultiplayerCoordinator(initialRoomParam, {
-  onStateUpdated: (_newState) => {
+  onStateUpdated: (newState) => {
     if (!coordinator) return;
     isSimulating = false;
     pendingSettledStateFromRemote = null;
-    autoOrientAimTowardLegalTarget();
+    if (newState.seq !== lastOrientedSeq || newState.rackSeed !== lastOrientedRackSeed) {
+      autoOrientAimTowardLegalTarget();
+    }
     syncHud();
   },
   onRemoteAim: (aim) => {
@@ -146,7 +150,6 @@ coordinator = new MultiplayerCoordinator(initialRoomParam, {
         );
         cueBall.x = valid.x;
         cueBall.y = valid.y;
-        coordinator.persistCueBallPlacement(valid.x, valid.y);
       }
     }
   },
@@ -190,6 +193,8 @@ resizeCanvas();
  */
 function autoOrientAimTowardLegalTarget(): void {
   const state = coordinator.getState();
+  lastOrientedSeq = state.seq;
+  lastOrientedRackSeed = state.rackSeed;
   if (state.cheatMode && pullBackPower < 0.05) {
     pullBackPower = state.isBreakShot ? 0.72 : 0.42;
   } else if (!state.cheatMode) {

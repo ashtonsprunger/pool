@@ -19,6 +19,7 @@ import {
   stepPhysics,
 } from '../src/physics/engine';
 import {
+  cloneGameState,
   computeAimPreview,
   computeCheatPreview,
   createInitialGameState,
@@ -771,6 +772,101 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
 
       expect(guest.getHostName()).toBe('Ashton');
       expect(guest.getGuestName()).toBe('Jordan');
+    } finally {
+      host.dispose();
+      guest.dispose();
+    }
+  });
+
+  it('does not trigger onStateUpdated (aim reset) on Player 2 when Host sends HELLO or SYNC_STATE at the same seq', () => {
+    let guestStateUpdateCount = 0;
+    const noopCallbacks = {
+      onStateUpdated: () => {},
+      onRemoteAim: () => {},
+      onRemoteShot: () => {},
+      onConnectionChanged: () => {},
+    };
+
+    const host = new MultiplayerCoordinator(null, noopCallbacks, {
+      clientId: 'HostAimTest',
+      disableNetwork: true,
+    });
+    const guest = new MultiplayerCoordinator(
+      null,
+      {
+        ...noopCallbacks,
+        onStateUpdated: () => {
+          guestStateUpdateCount++;
+        },
+      },
+      {
+        clientId: 'GuestAimTest',
+        disableNetwork: true,
+      }
+    );
+
+    try {
+      guest.joinRoom('AIMFIX', true);
+      const code = host.createMultiplayerRoom(false);
+      // Put guest in the same room with its own initial rack before syncing with host
+      guest.joinRoom(code, true);
+      guest.getState().rackSeed = host.getState().rackSeed + 999;
+
+      // Initial room sync: Guest adopts Host's rack at seq=0 (1st state update)
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'init_sync',
+        senderId: host.clientId,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+        state: host.getState(),
+      });
+      expect(guestStateUpdateCount).toBe(1);
+
+      // Advance to next seq where it is Player 2's (Guest's) turn
+      const turn1State = cloneGameState(host.getState());
+      turn1State.seq = host.getState().seq + 1;
+      turn1State.currentPlayer = 1;
+      turn1State.ballInHand = true;
+      host.commitSettledState(turn1State);
+
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'turn1_sync',
+        senderId: host.clientId,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+        state: host.getState(),
+      });
+      expect(guestStateUpdateCount).toBe(2);
+      expect(guest.isMyTurn()).toBe(true);
+
+      // Simulate Host having a newer updatedAt timestamp on the same seq=1
+      const newerHostState = cloneGameState(host.getState());
+      newerHostState.updatedAt = Date.now() + 50000;
+
+      // Host sends HELLO and SYNC_STATE heartbeats while Guest is aiming on seq=1
+      guest.handlePacket({
+        type: 'HELLO',
+        msgId: 'heartbeat_hello_1',
+        senderId: host.clientId,
+        knownSeq: newerHostState.seq,
+        state: newerHostState,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+      });
+
+      guest.handlePacket({
+        type: 'SYNC_STATE',
+        msgId: 'heartbeat_sync_1',
+        senderId: host.clientId,
+        hostClientId: host.clientId,
+        guestClientId: guest.clientId,
+        state: newerHostState,
+      });
+
+      // Guest must NOT have received any additional onStateUpdated calls that would reset their aim
+      expect(guestStateUpdateCount).toBe(2);
     } finally {
       host.dispose();
       guest.dispose();

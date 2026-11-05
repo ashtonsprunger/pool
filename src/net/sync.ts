@@ -781,25 +781,37 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.senderId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode) ||
-              pkt.state.updatedAt > localClean.updatedAt));
+              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode)));
 
         if (shouldAdoptRemote) {
-          this.session.state = cloneGameState(pkt.state);
-          this.session.pendingShot = null;
-          this.save();
-          this.callbacks.onStateUpdated(this.session.state, 'reconnect');
+          if (
+            this.session.pendingShot &&
+            this.session.pendingShot.settledState &&
+            this.session.pendingShot.settledState.seq === pkt.state.seq
+          ) {
+            this.session.pendingShot.settledState = cloneGameState(pkt.state);
+            this.save();
+          } else {
+            this.session.state = cloneGameState(pkt.state);
+            this.session.pendingShot = null;
+            this.save();
+            this.callbacks.onStateUpdated(this.session.state, 'reconnect');
+          }
         }
 
-        // Reply with SYNC_STATE when we have an authoritative state or newly reconciled seat/name assignment
-        if (
-          this.session.hostClientId &&
-          (!shouldAdoptRemote ||
-            this.session.guestClientId !== pkt.guestClientId ||
-            this.session.hostClientId !== pkt.hostClientId ||
-            this.session.guestName !== pkt.guestName ||
-            this.session.hostName !== pkt.hostName)
-        ) {
+        const peerNeedsSync =
+          localClean.seq > pkt.state.seq ||
+          (localClean.seq === pkt.state.seq &&
+            this.session.hostClientId === this.clientId &&
+            (pkt.state.rackSeed !== localClean.rackSeed ||
+              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode))) ||
+          this.session.guestClientId !== pkt.guestClientId ||
+          this.session.hostClientId !== pkt.hostClientId ||
+          this.session.guestName !== pkt.guestName ||
+          this.session.hostName !== pkt.hostName;
+
+        // Reply with SYNC_STATE when peer needs our authoritative state or newly reconciled seat/name assignment
+        if (this.session.hostClientId && peerNeedsSync) {
           const replyState = this.getCleanAuthoritativeState();
           this.broadcast({
             type: 'SYNC_STATE',
@@ -837,8 +849,7 @@ export class MultiplayerCoordinator {
             this.session.hostClientId !== this.clientId &&
             pkt.hostClientId === this.session.hostClientId &&
             (pkt.state.rackSeed !== localClean.rackSeed ||
-              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode) ||
-              pkt.state.updatedAt > localClean.updatedAt));
+              Boolean(pkt.state.cheatMode) !== Boolean(localClean.cheatMode)));
 
         if (shouldAdoptRemote) {
           // If we are currently animating this exact shot, let the visual animation finish
