@@ -198,8 +198,8 @@ export function resolvePendingShot(pending: PendingShotRecord): GameState {
     applyCueStrike(cueBall, pending.strike);
   }
   const telemetry = createInitialTelemetry();
-  const isFrictionless = getGameMode(pending.baseState) === 'frictionless';
-  simulateUntilRest(balls, telemetry, undefined, isFrictionless);
+  const mode = getGameMode(pending.baseState);
+  simulateUntilRest(balls, telemetry, undefined, mode);
   return evaluateShotOutcome(pending.baseState, balls, telemetry);
 }
 

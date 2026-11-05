@@ -975,4 +975,63 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
       player.dispose();
     }
   });
+
+  it('teleports balls between the side pockets in Portal Pockets mode while keeping corner pockets normal', () => {
+    const ball = createBall(1, 50.0, 4.0);
+    ball.vx = 4.0;
+    ball.vy = -85.0; // Shooting straight up into Top-Side pocket (x=50, y=-1.35)
+    const telemetry = createInitialTelemetry();
+
+    let teleportedToBottom = false;
+    for (let s = 0; s < 120; s++) {
+      stepPhysics([ball], telemetry, 1 / 240, 'portals');
+      if (ball.y > 40.0) {
+        teleportedToBottom = true;
+        break;
+      }
+    }
+
+    expect(teleportedToBottom).toBe(true);
+    expect(ball.pocketed).toBe(false);
+    expect(ball.vy).toBeLessThan(0); // Emerges heading upward into the table from the bottom side pocket
+  });
+
+  it('boosts rebound velocity off main cushions in Pinball Rails mode', () => {
+    const ball = createBall(0, 25.0, 3.0);
+    ball.vx = 0;
+    ball.vy = -60.0; // Heading toward top cushion at y=0
+    const telemetry = createInitialTelemetry();
+
+    let bounced = false;
+    for (let s = 0; s < 60; s++) {
+      stepPhysics([ball], telemetry, 1 / 240, 'pinball');
+      if (ball.vy > 0) {
+        bounced = true;
+        break;
+      }
+    }
+
+    expect(bounced).toBe(true);
+    expect(ball.vy).toBeGreaterThan(65.0); // Rebounds faster than 60 in/s approach speed
+  });
+
+  it('curves passing balls toward pockets in Black Hole mode', () => {
+    const normalBall = createBall(1, 40.0, 7.0);
+    normalBall.vx = 45.0;
+    normalBall.vy = 0;
+    const blackHoleBall = createBall(1, 40.0, 7.0);
+    blackHoleBall.vx = 45.0;
+    blackHoleBall.vy = 0;
+
+    const telNormal = createInitialTelemetry();
+    const telBlackHole = createInitialTelemetry();
+
+    for (let s = 0; s < 60; s++) {
+      stepPhysics([normalBall], telNormal, 1 / 240, 'normal');
+      stepPhysics([blackHoleBall], telBlackHole, 1 / 240, 'blackhole');
+    }
+
+    // Top-Side pocket is at (50, -1.35), so Black Hole gravity pulls the passing ball toward -Y
+    expect(blackHoleBall.y).toBeLessThan(normalBall.y - 0.5);
+  });
 });

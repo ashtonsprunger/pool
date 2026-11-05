@@ -26,7 +26,13 @@ import { clamp } from '../physics/vector';
 
 export type BallGroup = 'solids' | 'stripes';
 export type PlayerIndex = 0 | 1;
-export type GameMode = 'normal' | 'cheat' | 'frictionless';
+export type GameMode =
+  | 'normal'
+  | 'cheat'
+  | 'frictionless'
+  | 'portals'
+  | 'pinball'
+  | 'blackhole';
 
 export interface GameState {
   seq: number;
@@ -50,7 +56,10 @@ export function getGameMode(state: GameState): GameMode {
   if (
     state.gameMode === 'normal' ||
     state.gameMode === 'cheat' ||
-    state.gameMode === 'frictionless'
+    state.gameMode === 'frictionless' ||
+    state.gameMode === 'portals' ||
+    state.gameMode === 'pinball' ||
+    state.gameMode === 'blackhole'
   ) {
     return state.gameMode;
   }
@@ -490,11 +499,12 @@ export function evaluateShotOutcome(
   }
 
   const eightPocketed = telemetry.pocketedBallIds.includes(8);
-  const isFrictionless = getGameMode(prevState) === 'frictionless';
+  const mode = getGameMode(prevState);
+  const spotEarlyEight = mode === 'frictionless' || mode === 'pinball';
 
-  // In Frictionless mode, if the 8-ball is knocked in early before the shooter is on the 8-ball,
+  // In Frictionless / Pinball mode, if the 8-ball is knocked in early before the shooter is on the 8-ball,
   // spot it back on the foot spot so chain-reaction ricochets don't end the game prematurely.
-  if (eightPocketed && isFrictionless && !wasShootingAtEight) {
+  if (eightPocketed && spotEarlyEight && !wasShootingAtEight) {
     spotBallOnFootSpot(8, balls);
   } else if (eightPocketed) {
     // 3. CHECK 8-BALL WIN / LOSS
@@ -832,8 +842,9 @@ export function computeCheatPreview(
   strike: CueStrikeParams,
   maxSteps?: number
 ): CheatPreview {
-  const isFrictionless = getGameMode(state) === 'frictionless';
-  const effectiveMaxSteps = maxSteps ?? (isFrictionless ? 240 * 35 : 240 * 25);
+  const mode = getGameMode(state);
+  const effectiveMaxSteps =
+    maxSteps ?? (mode === 'frictionless' || mode === 'pinball' ? 240 * 35 : 240 * 25);
   const simBalls = cloneBalls(state.balls);
   const startPositions = new Map<number, { x: number; y: number; wasPocketed: boolean }>();
   const paths = new Map<number, BallTrajectoryPoint[]>();
@@ -854,10 +865,10 @@ export function computeCheatPreview(
   let steps = 0;
 
   while (steps < effectiveMaxSteps && areBallsMoving(simBalls)) {
-    stepPhysics(simBalls, telemetry, FIXED_DT, isFrictionless);
+    stepPhysics(simBalls, telemetry, FIXED_DT, mode);
     steps++;
 
-    if (steps % 4 === 0) {
+    if (steps % 3 === 0) {
       for (const b of simBalls) {
         const path = paths.get(b.id);
         if (!path) continue;

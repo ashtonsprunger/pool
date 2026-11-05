@@ -39,12 +39,21 @@ export interface BallState {
   qw: number;
 }
 
+export type PhysicsMode =
+  | 'normal'
+  | 'cheat'
+  | 'frictionless'
+  | 'portals'
+  | 'pinball'
+  | 'blackhole';
+
 export interface ShotTelemetry {
   firstContactBallId: number | null;
   pocketedBallIds: number[];
   cushionContactsAfterFirstHit: number;
   objectBallsDrivenToCushion: Set<number>;
   cueBallPocketed: boolean;
+  totalRailBounces: number;
 }
 
 export function createInitialTelemetry(): ShotTelemetry {
@@ -54,7 +63,15 @@ export function createInitialTelemetry(): ShotTelemetry {
     cushionContactsAfterFirstHit: 0,
     objectBallsDrivenToCushion: new Set<number>(),
     cueBallPocketed: false,
+    totalRailBounces: 0,
   };
+}
+
+function normalizePhysicsMode(modeOrFrictionless: PhysicsMode | boolean = 'normal'): PhysicsMode {
+  if (typeof modeOrFrictionless === 'boolean') {
+    return modeOrFrictionless ? 'frictionless' : 'normal';
+  }
+  return modeOrFrictionless;
 }
 
 export function createBall(id: number, x: number, y: number): BallState {
@@ -164,13 +181,41 @@ function integrateQuaternion(b: BallState, dt: number): void {
  * Advances a single ball's position, linear velocity, and 3D angular velocity over dt,
  * accurately modeling the transition from sliding friction (MU_SLIDE) to rolling resistance (MU_ROLL).
  * In frictionless mode, cloth friction is completely removed so balls glide without deceleration.
+ * In blackhole mode, pockets exert a gravitational pull on moving balls within their gravity well.
  */
-function stepBallMotion(b: BallState, dt: number, frictionless: boolean = false): void {
+function stepBallMotion(b: BallState, dt: number, mode: PhysicsMode = 'normal'): void {
   if (b.pocketed) return;
+
+  const frictionless = mode === 'frictionless';
+  const blackhole = mode === 'blackhole';
 
   // 1. Advance position
   b.x += b.vx * dt;
   b.y += b.vy * dt;
+
+  // Black Hole Mode: apply pocket gravity well acceleration to moving balls
+  let insideEventHorizon = false;
+  if (blackhole) {
+    const vBefore = Math.hypot(b.vx, b.vy);
+    if (vBefore > 1e-5) {
+      const wellRadius = 16.5;
+      for (let p = 0; p < POCKETS.length; p++) {
+        const pk = POCKETS[p];
+        const dx = pk.x - b.x;
+        const dy = pk.y - b.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < wellRadius && dist > 1e-4) {
+          const falloff = 1 - dist / wellRadius;
+          const pullAccel = 285 * falloff * falloff;
+          b.vx += (dx / dist) * pullAccel * dt;
+          b.vy += (dy / dist) * pullAccel * dt;
+          if (dist < 6.0) {
+            insideEventHorizon = true;
+          }
+        }
+      }
+    }
+  }
 
   if (frictionless) {
     const vMag = Math.hypot(b.vx, b.vy);
@@ -219,11 +264,11 @@ function stepBallMotion(b: BallState, dt: number, frictionless: boolean = false)
     // Apply rolling resistance over remaining time
     const vMag = Math.hypot(b.vx, b.vy);
     const rollDecel = MU_ROLL * GRAVITY * dt;
-    if (vMag > rollDecel && vMag > STOP_SPEED_THRESHOLD) {
+    if (vMag > rollDecel && (vMag > STOP_SPEED_THRESHOLD || insideEventHorizon)) {
       const scale = (vMag - rollDecel) / vMag;
       b.vx *= scale;
       b.vy *= scale;
-    } else {
+    } else if (!insideEventHorizon) {
       b.vx = 0;
       b.vy = 0;
     }
@@ -243,6 +288,7 @@ function stepBallMotion(b: BallState, dt: number, frictionless: boolean = false)
 
   // Snap to complete rest if below thresholds
   if (
+    !insideEventHorizon &&
     Math.hypot(b.vx, b.vy) < STOP_SPEED_THRESHOLD &&
     Math.hypot(b.wx, b.wy) * BALL_RADIUS < STOP_SPEED_THRESHOLD
   ) {
@@ -257,8 +303,14 @@ function stepBallMotion(b: BallState, dt: number, frictionless: boolean = false)
 
 /**
  * Checks if any ball has entered a pocket's drop zone.
+ * In 'portals' mode, the 2 middle side pockets (id 1 and id 4) act as a connected wormhole pair
+ * that teleports balls across the table while preserving/boosting momentum.
  */
-function checkPockets(balls: BallState[], telemetry: ShotTelemetry): void {
+function checkPockets(
+  balls: BallState[],
+  telemetry: ShotTelemetry,
+  mode: PhysicsMode = 'normal'
+): void {
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
     if (b.pocketed) continue;
@@ -268,6 +320,51 @@ function checkPockets(balls: BallState[], telemetry: ShotTelemetry): void {
       const dx = b.x - pocket.x;
       const dy = b.y - pocket.y;
       if (dx * dx + dy * dy <= pocket.radius * pocket.radius) {
+        if (mode === 'portals' && pocket.type === 'side') {
+          const fromTopSide = pocket.id === 1;
+          const offsetX = clamp(b.x - 50.0, -1.2, 1.2);
+          const exitX = 50.0 + offsetX * 0.5;
+          let exitY = fromTopSide
+            ? TABLE_WIDTH - BALL_RADIUS - 0.75
+            : BALL_RADIUS + 0.75;
+          const stepY = fromTopSide ? -(BALL_DIAMETER + 0.15) : BALL_DIAMETER + 0.15;
+
+          for (let attempt = 0; attempt < 10; attempt++) {
+            const blocked = balls.some(
+              (other) =>
+                other.id !== b.id &&
+                !other.pocketed &&
+                Math.hypot(exitX - other.x, exitY - other.y) < BALL_DIAMETER + 0.08
+            );
+            if (!blocked) break;
+            exitY += stepY;
+          }
+
+          const inSpeed = Math.hypot(b.vx, b.vy);
+          const outSpeed = clamp(Math.max(inSpeed * 1.08, 24), 24, MAX_SHOT_SPEED * 0.85);
+          const minInwardVy = outSpeed * 0.38;
+          const rawVx = b.vx;
+          const rawVy = fromTopSide
+            ? -Math.max(Math.abs(b.vy), minInwardVy)
+            : Math.max(Math.abs(b.vy), minInwardVy);
+          const rawMag = Math.hypot(rawVx, rawVy) || 1;
+
+          b.x = exitX;
+          b.y = clamp(exitY, BALL_RADIUS + 0.5, TABLE_WIDTH - BALL_RADIUS - 0.5);
+          b.vx = (rawVx / rawMag) * outSpeed;
+          b.vy = (rawVy / rawMag) * outSpeed;
+          b.wy = b.vx / BALL_RADIUS;
+          b.wx = -b.vy / BALL_RADIUS;
+
+          if (telemetry.firstContactBallId !== null) {
+            telemetry.cushionContactsAfterFirstHit++;
+          }
+          if (b.id !== 0) {
+            telemetry.objectBallsDrivenToCushion.add(b.id);
+          }
+          break;
+        }
+
         b.pocketed = true;
         b.pocketId = pocket.id;
         b.vx = 0;
@@ -293,7 +390,7 @@ function checkPockets(balls: BallState[], telemetry: ShotTelemetry): void {
 function resolveCushionCollisions(
   balls: BallState[],
   telemetry: ShotTelemetry,
-  frictionless: boolean = false
+  mode: PhysicsMode = 'normal'
 ): void {
   for (let i = 0; i < balls.length; i++) {
     const b = balls[i];
@@ -335,7 +432,7 @@ function resolveCushionCollisions(
 
         const vn = b.vx * nx + b.vy * ny;
         if (vn < 0) {
-          applyCushionImpulse(b, nx, ny, -vn, seg.isJaw, frictionless);
+          applyCushionImpulse(b, nx, ny, -vn, seg.isJaw, mode, telemetry);
           if (!seg.isJaw) {
             hitRailThisStep = true;
           }
@@ -358,7 +455,7 @@ function resolveCushionCollisions(
 
         const vn = b.vx * nx + b.vy * ny;
         if (vn < 0) {
-          applyCushionImpulse(b, nx, ny, -vn, true, frictionless);
+          applyCushionImpulse(b, nx, ny, -vn, true, mode, telemetry);
           hitRailThisStep = true;
         }
       }
@@ -396,14 +493,15 @@ function applyCushionImpulse(
   ny: number,
   approachSpeed: number,
   isJaw: boolean,
-  frictionless: boolean = false
+  mode: PhysicsMode = 'normal',
+  telemetry?: ShotTelemetry
 ): void {
   // Tangent vector t = (-ny, nx) so that n x t = +z
   const tx = -ny;
   const ty = nx;
 
   const vt = b.vx * tx + b.vy * ty;
-  if (frictionless) {
+  if (mode === 'frictionless') {
     // Dampen both normal and tangential velocity on rail bounce so shallow and direct rail hits lose energy
     const normalRestitution = isJaw ? 0.66 : 0.74;
     const tangentRetention = 0.84;
@@ -412,6 +510,23 @@ function applyCushionImpulse(
     b.vx = nx * newVn + tx * newVt;
     b.vy = ny * newVn + ty * newVt;
     return;
+  }
+
+  if (mode === 'pinball' && !isJaw) {
+    if (telemetry) {
+      telemetry.totalRailBounces = (telemetry.totalRailBounces ?? 0) + 1;
+    }
+    const bounces = telemetry?.totalRailBounces ?? 1;
+    if (bounces <= 14) {
+      const rawVn = Math.max(approachSpeed * 1.38, 28);
+      const newVn = Math.min(rawVn, MAX_SHOT_SPEED * 0.82);
+      const newVt = clamp(vt * 1.04, -MAX_SHOT_SPEED * 0.65, MAX_SHOT_SPEED * 0.65);
+      b.vx = nx * newVn + tx * newVt;
+      b.vy = ny * newVn + ty * newVt;
+      b.wy = b.vx / BALL_RADIUS;
+      b.wx = -b.vy / BALL_RADIUS;
+      return;
+    }
   }
 
   const restitution = isJaw ? CUSHION_RESTITUTION * 0.85 : CUSHION_RESTITUTION;
@@ -445,8 +560,9 @@ function applyCushionImpulse(
 function resolveBallBallCollisions(
   balls: BallState[],
   telemetry: ShotTelemetry,
-  frictionless: boolean = false
+  mode: PhysicsMode = 'normal'
 ): void {
+  const frictionless = mode === 'frictionless';
   const n = balls.length;
   for (let pass = 0; pass < 3; pass++) {
     let anyCollision = false;
@@ -558,8 +674,9 @@ export function stepPhysics(
   balls: BallState[],
   telemetry: ShotTelemetry,
   dt: number = FIXED_DT,
-  frictionless: boolean = false
+  modeOrFrictionless: PhysicsMode | boolean = 'normal'
 ): boolean {
+  const mode = normalizePhysicsMode(modeOrFrictionless);
   const maxSpeed = getMaxBallSpeed(balls);
 
   // Adaptive sub-stepping: ensure no ball moves more than 0.22 * BALL_RADIUS per micro-step
@@ -569,12 +686,12 @@ export function stepPhysics(
 
   for (let s = 0; s < subSteps; s++) {
     for (let i = 0; i < balls.length; i++) {
-      stepBallMotion(balls[i], subDt, frictionless);
+      stepBallMotion(balls[i], subDt, mode);
     }
-    checkPockets(balls, telemetry);
-    resolveBallBallCollisions(balls, telemetry, frictionless);
-    resolveCushionCollisions(balls, telemetry, frictionless);
-    checkPockets(balls, telemetry);
+    checkPockets(balls, telemetry, mode);
+    resolveBallBallCollisions(balls, telemetry, mode);
+    resolveCushionCollisions(balls, telemetry, mode);
+    checkPockets(balls, telemetry, mode);
   }
 
   return areBallsMoving(balls);
@@ -608,12 +725,14 @@ export function simulateUntilRest(
   balls: BallState[],
   telemetry: ShotTelemetry,
   maxSteps?: number,
-  frictionless: boolean = false
+  modeOrFrictionless: PhysicsMode | boolean = 'normal'
 ): number {
-  const effectiveMaxSteps = maxSteps ?? (frictionless ? 240 * 35 : 240 * 25);
+  const mode = normalizePhysicsMode(modeOrFrictionless);
+  const effectiveMaxSteps =
+    maxSteps ?? (mode === 'frictionless' || mode === 'pinball' ? 240 * 35 : 240 * 25);
   let steps = 0;
   while (steps < effectiveMaxSteps && areBallsMoving(balls)) {
-    stepPhysics(balls, telemetry, FIXED_DT, frictionless);
+    stepPhysics(balls, telemetry, FIXED_DT, mode);
     steps++;
   }
   // Ensure clean stop if maxSteps reached

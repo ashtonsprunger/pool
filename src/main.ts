@@ -162,8 +162,18 @@ function resolveSelectedNetworkMode(): GameMode {
     setSecretCheatForAshton(true);
     return 'normal';
   }
-  setSecretCheatForAshton(false);
-  if (val === 'cheat' || val === 'frictionless') return val;
+  if (val === 'normal' || val === 'cheat') {
+    setSecretCheatForAshton(false);
+  }
+  if (
+    val === 'cheat' ||
+    val === 'frictionless' ||
+    val === 'portals' ||
+    val === 'pinball' ||
+    val === 'blackhole'
+  ) {
+    return val;
+  }
   return 'normal';
 }
 
@@ -336,6 +346,9 @@ function formatStatusWithPlayerNames(rawMessage: string, p1Label: string, p2Labe
 function formatModeTag(mode: GameMode): string {
   if (mode === 'cheat') return 'Cheat';
   if (mode === 'frictionless') return 'Frictionless';
+  if (mode === 'portals') return 'Portals';
+  if (mode === 'pinball') return 'Pinball';
+  if (mode === 'blackhole') return 'Black Hole';
   return 'Normal';
 }
 
@@ -547,18 +560,9 @@ function syncHud(): void {
   }
 
   const isCheat = isLocalCheatActive(state);
-  const modeSuffix =
-    currentMode === 'cheat'
-      ? ' · Cheat'
-      : currentMode === 'frictionless'
-      ? ' · Frictionless'
-      : '';
-  const modeLabel =
-    currentMode === 'cheat'
-      ? ' (Cheat)'
-      : currentMode === 'frictionless'
-      ? ' (Frictionless)'
-      : '';
+  const modeTag = formatModeTag(currentMode);
+  const modeSuffix = currentMode === 'normal' ? '' : ` · ${modeTag}`;
+  const modeLabel = currentMode === 'normal' ? '' : ` (${modeTag})`;
 
   if (roomModal.classList.contains('hidden')) {
     gameModeSelect.value =
@@ -856,12 +860,12 @@ function executeShot(strike: CueStrikeParams): void {
   const cueY = cueBall.y;
 
   // 1. Pre-compute deterministic settled state for persistence & peer sync
-  const isFrictionless = getGameMode(state) === 'frictionless';
+  const mode = getGameMode(state);
   const simBalls = cloneBalls(state.balls);
   const simCue = simBalls.find((b) => b.id === 0)!;
   applyCueStrike(simCue, strike);
   const simTelemetry = createInitialTelemetry();
-  simulateUntilRest(simBalls, simTelemetry, undefined, isFrictionless);
+  simulateUntilRest(simBalls, simTelemetry, undefined, mode);
   const settledState = evaluateShotOutcome(state, simBalls, simTelemetry);
 
   // 2. Record pending shot in localStorage & broadcast to peer
@@ -960,7 +964,10 @@ gameModeSelect.addEventListener('change', () => {
   if (gameModeSelect.value === 'secret_cheat' && isPlayerAshton()) {
     setSecretCheatForAshton(true);
     syncHud();
-  } else if (secretCheatForAshton) {
+  } else if (
+    (gameModeSelect.value === 'normal' || gameModeSelect.value === 'cheat') &&
+    secretCheatForAshton
+  ) {
     setSecretCheatForAshton(false);
     syncHud();
   }
@@ -1094,7 +1101,8 @@ function getMemoizedCheatPreview(state: GameState): CheatPreview | null {
   const cueBall = state.balls.find((b) => b.id === 0);
   if (!cueBall || cueBall.pocketed) return null;
   const effectivePower = clamp(pullBackPower || (state.isBreakShot ? 0.72 : 0.42), 0.05, 1.0);
-  const key = `${state.seq}_${cueBall.x.toFixed(4)}_${cueBall.y.toFixed(4)}_${aimAngle.toFixed(6)}_${effectivePower.toFixed(4)}_${spinX.toFixed(3)}_${spinY.toFixed(3)}`;
+  const mode = getGameMode(state);
+  const key = `${state.seq}_${mode}_${cueBall.x.toFixed(4)}_${cueBall.y.toFixed(4)}_${aimAngle.toFixed(6)}_${effectivePower.toFixed(4)}_${spinX.toFixed(3)}_${spinY.toFixed(3)}`;
   if (key !== cachedCheatKey || !cachedCheatPreview) {
     cachedCheatKey = key;
     cachedCheatPreview = computeCheatPreview(state, {
@@ -1133,7 +1141,7 @@ function animate(now: number): void {
     while (physicsAccumulator >= FIXED_DT && stepsThisFrame < 40) {
       physicsAccumulator -= FIXED_DT;
       stepsThisFrame++;
-      const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, isFrictionless);
+      const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, currentMode);
       if (!stillMoving) {
         isSimulating = false;
         physicsAccumulator = 0;

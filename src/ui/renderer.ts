@@ -1,4 +1,4 @@
-import { AimPreview, CheatPreview, GameState } from '../game/rules';
+import { AimPreview, CheatPreview, GameState, getGameMode } from '../game/rules';
 import { TableViewport, tableToScreen } from '../game/viewport';
 import {
   BALL_COLORS,
@@ -77,7 +77,7 @@ export function renderPoolTable(
 
   drawOuterRailsAndCushions(ctx);
   drawPlayingSurfaceAndMarkings(ctx, state);
-  drawPockets(ctx);
+  drawPockets(ctx, state);
 
   // Draw Aim Preview or Cheat Mode Trajectories (below balls/cue so balls sit cleanly on top)
   if (input.showAim && state.winner === null) {
@@ -221,6 +221,67 @@ function drawPlayingSurfaceAndMarkings(ctx: CanvasRenderingContext2D, state: Gam
   // Right foot cushion
   drawCushionPoly([[100, C], [100 + ct, CJ], [100 + ct, 50 - CJ], [100, 50 - C]]);
 
+  const mode = getGameMode(state);
+
+  // Pinball Rails Mode: draw glowing neon bumper strips along the 6 main cushion noses
+  if (mode === 'pinball') {
+    ctx.save();
+    ctx.lineCap = 'round';
+    const bumperSegments: [number, number, number, number][] = [
+      [C, 0, S1, 0],
+      [S2, 0, 100 - C, 0],
+      [C, 50, S1, 50],
+      [S2, 50, 100 - C, 50],
+      [0, C, 0, 50 - C],
+      [100, C, 100, 50 - C],
+    ];
+    for (const [ax, ay, bx, by] of bumperSegments) {
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.38)';
+      ctx.lineWidth = 0.55;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.strokeStyle = '#FB7185';
+      ctx.lineWidth = 0.18;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Black Hole Mode: draw subtle gravitational field rings clipped to the playing surface
+  if (mode === 'blackhole') {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, TABLE_LENGTH, TABLE_WIDTH);
+    ctx.clip();
+
+    for (const p of POCKETS) {
+      // Soft violet gravity well gradient
+      const wellGrad = ctx.createRadialGradient(p.x, p.y, 1.5, p.x, p.y, 15.5);
+      wellGrad.addColorStop(0, 'rgba(168, 85, 247, 0.22)');
+      wellGrad.addColorStop(0.45, 'rgba(99, 102, 241, 0.08)');
+      wellGrad.addColorStop(1, 'rgba(99, 102, 241, 0)');
+      ctx.fillStyle = wellGrad;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 15.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Event horizon indicator ring (6.0 in)
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 6.0, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.28)';
+      ctx.lineWidth = 0.11;
+      ctx.setLineDash([0.4, 0.35]);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // Head String line (x = 25.0)
   ctx.save();
   ctx.beginPath();
@@ -252,8 +313,13 @@ function drawPlayingSurfaceAndMarkings(ctx: CanvasRenderingContext2D, state: Gam
   drawSpot(FOOT_SPOT.x, FOOT_SPOT.y);
 }
 
-function drawPockets(ctx: CanvasRenderingContext2D): void {
+function drawPockets(ctx: CanvasRenderingContext2D, state: GameState): void {
+  const mode = getGameMode(state);
+
   for (const p of POCKETS) {
+    const isPortalPocket = mode === 'portals' && p.type === 'side';
+    const isBlackHole = mode === 'blackhole';
+
     // Outer dark leather/rubber pocket rim
     ctx.beginPath();
     ctx.arc(p.renderX, p.renderY, p.renderRadius + 0.35, 0, Math.PI * 2);
@@ -271,11 +337,50 @@ function drawPockets(ctx: CanvasRenderingContext2D): void {
       p.renderY,
       p.renderRadius
     );
-    pGrad.addColorStop(0, '#040506');
-    pGrad.addColorStop(0.8, '#090B0E');
-    pGrad.addColorStop(1, '#16191E');
+    if (isPortalPocket) {
+      const isTopBlue = p.id === 1;
+      pGrad.addColorStop(0, isTopBlue ? '#E0F2FE' : '#FFEDD5');
+      pGrad.addColorStop(0.45, isTopBlue ? '#0284C7' : '#EA580C');
+      pGrad.addColorStop(0.85, isTopBlue ? '#0369A1' : '#9A3412');
+      pGrad.addColorStop(1, '#090D16');
+    } else if (isBlackHole) {
+      pGrad.addColorStop(0, '#000000');
+      pGrad.addColorStop(0.65, '#090414');
+      pGrad.addColorStop(0.9, '#3B0764');
+      pGrad.addColorStop(1, '#7E22CE');
+    } else {
+      pGrad.addColorStop(0, '#040506');
+      pGrad.addColorStop(0.8, '#090B0E');
+      pGrad.addColorStop(1, '#16191E');
+    }
     ctx.fillStyle = pGrad;
     ctx.fill();
+
+    if (isPortalPocket) {
+      const isTopBlue = p.id === 1;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.renderX, p.renderY, p.renderRadius * 0.92, 0, Math.PI * 2);
+      ctx.strokeStyle = isTopBlue ? '#38BDF8' : '#FB923C';
+      ctx.lineWidth = 0.24;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(p.renderX, p.renderY, p.renderRadius * 0.56, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.lineWidth = 0.12;
+      ctx.setLineDash([0.35, 0.25]);
+      ctx.stroke();
+      ctx.restore();
+    } else if (isBlackHole) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.renderX, p.renderY, p.renderRadius * 0.94, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.75)';
+      ctx.lineWidth = 0.18;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 
@@ -482,7 +587,13 @@ function drawCheatPreviewTrajectories(
     ctx.beginPath();
     ctx.moveTo(eb.path[0].x, eb.path[0].y);
     for (let i = 1; i < eb.path.length; i++) {
-      ctx.lineTo(eb.path[i].x, eb.path[i].y);
+      const prev = eb.path[i - 1];
+      const cur = eb.path[i];
+      if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > 15) {
+        ctx.moveTo(cur.x, cur.y);
+      } else {
+        ctx.lineTo(cur.x, cur.y);
+      }
     }
 
     ctx.strokeStyle = isCueFoul
