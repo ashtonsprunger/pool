@@ -25,6 +25,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith('/api/')) return;
 
   // Network-first with cache fallback so updates deploy immediately and offline works
   event.respondWith(

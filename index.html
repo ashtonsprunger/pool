@@ -52,7 +52,38 @@
 
       <!-- Main Table Stage -->
       <main class="table-stage" id="table-stage">
-        <canvas id="pool-canvas"></canvas>
+        <canvas id="pool-canvas-3d"></canvas>
+        <canvas id="pool-canvas" class="hidden"></canvas>
+
+        <!-- Floating 3D Camera & Sound Bar -->
+        <div class="stage-overlay-bar" id="stage-overlay-bar">
+          <div class="cam-pill-group" id="cam-pill-group" role="group" aria-label="Camera View">
+            <button class="cam-pill-btn active" type="button" data-cam="cue" title="3D Behind-the-Cue Camera">
+              Cue
+            </button>
+            <button class="cam-pill-btn" type="button" data-cam="broadcast" title="3D Pool Hall TV Camera">
+              TV
+            </button>
+            <button class="cam-pill-btn" type="button" data-cam="overhead" title="3D Overhead Tactical Camera">
+              Top
+            </button>
+            <button class="cam-pill-btn" type="button" data-cam="2d" title="Classic 2D Flat View">
+              2D
+            </button>
+          </div>
+          <button class="sound-pill-btn" id="sound-toggle-btn" type="button" aria-label="Toggle Sound" title="Toggle Sound">
+            <svg id="sound-icon-on" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            </svg>
+            <svg id="sound-icon-off" class="hidden" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <line x1="23" y1="9" x2="17" y2="15"></line>
+              <line x1="17" y1="9" x2="23" y2="15"></line>
+            </svg>
+          </button>
+        </div>
 
         <!-- Winner Overlay Action -->
         <div class="winner-banner hidden" id="winner-banner">

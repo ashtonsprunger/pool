@@ -1278,3 +1278,112 @@ describe('Responsive Viewport & Mid-Shot Reconnect Recovery', () => {
     }
   });
 });
+
+describe('3D Renderer Coordinate, Spin & Pocket-Drop Physics', () => {
+  it('maps canonical 2D table coordinates (0..100 x 0..50) cleanly to 3D world space and back', async () => {
+    const { txToWorldX, tyToWorldZ, worldXToTx, worldZToTy } = await import(
+      '../src/ui/renderer3d'
+    );
+
+    expect(txToWorldX(50)).toBe(0);
+    expect(tyToWorldZ(25)).toBe(0);
+    expect(txToWorldX(0)).toBe(-50);
+    expect(txToWorldX(TABLE_LENGTH)).toBe(50);
+    expect(tyToWorldZ(0)).toBe(-25);
+    expect(tyToWorldZ(TABLE_WIDTH)).toBe(25);
+
+    for (const [tx, ty] of [
+      [0, 0],
+      [25, 25],
+      [75, 25],
+      [98.4, 1.8],
+    ]) {
+      expect(worldXToTx(txToWorldX(tx))).toBeCloseTo(tx, 6);
+      expect(worldZToTy(tyToWorldZ(ty))).toBeCloseTo(ty, 6);
+    }
+  });
+
+  it('converts 2D engine quaternions to right-handed Three.js quaternions with zero-slip rolling along +X and +Z', async () => {
+    const THREE = await import('three');
+    const { engineQuatToThreeQuat } = await import('../src/ui/renderer3d');
+
+    // Roll East (+tx => +worldX) at natural rolling angular velocity: top of sphere (0, +R, 0) advances by +dx
+    const eastBall = createBall(1, 30, 25);
+    eastBall.vx = 24;
+    eastBall.vy = 0;
+    eastBall.wy = eastBall.vx / BALL_RADIUS;
+    const prevEastX = eastBall.x;
+    stepPhysics([eastBall], createInitialTelemetry());
+    const dx = eastBall.x - prevEastX;
+    const [eqx, eqy, eqz, eqw] = engineQuatToThreeQuat(
+      eastBall.qx,
+      eastBall.qy,
+      eastBall.qz,
+      eastBall.qw
+    );
+    const eastQuat = new THREE.Quaternion(eqx, eqy, eqz, eqw);
+    const topAfterEast = new THREE.Vector3(0, BALL_RADIUS, 0).applyQuaternion(eastQuat);
+    const contactAfterEast = new THREE.Vector3(0, -BALL_RADIUS, 0).applyQuaternion(eastQuat);
+    expect(topAfterEast.x).toBeCloseTo(dx, 3);
+    expect(contactAfterEast.x).toBeCloseTo(-dx, 3);
+    expect(Math.abs(topAfterEast.z)).toBeLessThan(1e-5);
+
+    // Roll South (+ty => +worldZ) at natural rolling angular velocity: top of sphere (0, +R, 0) advances by +dz
+    const southBall = createBall(2, 30, 25);
+    southBall.vx = 0;
+    southBall.vy = 24;
+    southBall.wx = -southBall.vy / BALL_RADIUS;
+    const prevSouthY = southBall.y;
+    stepPhysics([southBall], createInitialTelemetry());
+    const dz = southBall.y - prevSouthY;
+    const [sqx, sqy, sqz, sqw] = engineQuatToThreeQuat(
+      southBall.qx,
+      southBall.qy,
+      southBall.qz,
+      southBall.qw
+    );
+    const southQuat = new THREE.Quaternion(sqx, sqy, sqz, sqw);
+    const topAfterSouth = new THREE.Vector3(0, BALL_RADIUS, 0).applyQuaternion(southQuat);
+    const contactAfterSouth = new THREE.Vector3(0, -BALL_RADIUS, 0).applyQuaternion(southQuat);
+    expect(topAfterSouth.z).toBeCloseTo(dz, 3);
+    expect(contactAfterSouth.z).toBeCloseTo(-dz, 3);
+    expect(Math.abs(topAfterSouth.x)).toBeLessThan(1e-5);
+  });
+
+  it('drops pocketed balls under 3D gravity, bounces off the pocket liner, and settles in the recessed basket', async () => {
+    const { stepPocketDropPhysics } = await import('../src/ui/renderer3d');
+    const cornerPocket = POCKETS[0]; // Top-left corner pocket
+
+    const drop = {
+      ballId: 8,
+      pocketId: cornerPocket.id,
+      x: cornerPocket.x + 1.2,
+      y: cornerPocket.y + 1.2,
+      height: BALL_RADIUS * 0.8,
+      vx: -38,
+      vy: -32,
+      vHeight: -14,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+      settled: false,
+      age: 0,
+      slotIndex: 0,
+    };
+
+    const maxWallR = Math.max(0.55, cornerPocket.renderRadius - BALL_RADIUS * 0.92);
+    for (let i = 0; i < 240; i++) {
+      stepPocketDropPhysics(drop, cornerPocket, 1 / 120);
+      const radialDist = Math.hypot(
+        drop.x - cornerPocket.renderX,
+        drop.y - cornerPocket.renderY
+      );
+      expect(radialDist).toBeLessThanOrEqual(maxWallR + 1e-4);
+    }
+
+    expect(drop.settled).toBe(true);
+    expect(drop.height).toBeLessThan(-2.5);
+    expect(drop.vHeight).toBe(0);
+  });
+});

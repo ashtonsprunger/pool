@@ -37,11 +37,22 @@ import {
 } from './physics/engine';
 import { clamp } from './physics/vector';
 import { renderPoolTable } from './ui/renderer';
+import { CameraViewMode, Pool3DRenderer } from './ui/renderer3d';
+import { BilliardSoundEngine } from './ui/sound';
 
 // DOM Elements
 const stageEl = document.getElementById('table-stage') as HTMLElement;
+const canvas3d = document.getElementById('pool-canvas-3d') as HTMLCanvasElement;
 const canvas = document.getElementById('pool-canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
+
+const camPillGroup = document.getElementById('cam-pill-group') as HTMLElement;
+const camPillButtons = Array.from(
+  camPillGroup.querySelectorAll<HTMLButtonElement>('.cam-pill-btn')
+);
+const soundToggleBtn = document.getElementById('sound-toggle-btn') as HTMLButtonElement;
+const soundIconOn = document.getElementById('sound-icon-on') as HTMLElement;
+const soundIconOff = document.getElementById('sound-icon-off') as HTMLElement;
 
 const p1Pill = document.getElementById('p1-pill') as HTMLElement;
 const p2Pill = document.getElementById('p2-pill') as HTMLElement;
@@ -106,6 +117,27 @@ const nameModal = document.getElementById('name-modal') as HTMLElement;
 const nameModalForm = document.getElementById('name-modal-form') as HTMLFormElement;
 const nameModalInput = document.getElementById('name-modal-input') as HTMLInputElement;
 
+// Audio & 3D Renderer Initialization
+const soundEngine = new BilliardSoundEngine();
+const STORAGE_CAM_MODE_KEY = 'pool8_cam_mode_v1';
+let cameraViewMode: CameraViewMode = 'cue';
+try {
+  const savedCam = localStorage.getItem(STORAGE_CAM_MODE_KEY) as CameraViewMode | null;
+  if (savedCam === 'cue' || savedCam === 'broadcast' || savedCam === 'overhead' || savedCam === '2d') {
+    cameraViewMode = savedCam;
+  }
+} catch {
+  // Ignore storage errors
+}
+
+let renderer3d: Pool3DRenderer | null = null;
+try {
+  renderer3d = new Pool3DRenderer(canvas3d);
+} catch {
+  // Graceful fallback to 2D canvas if WebGL is disabled
+  cameraViewMode = '2d';
+}
+
 // Application State
 let viewport: TableViewport = computeTableViewport(window.innerWidth, window.innerHeight - 110);
 let aimAngle = 0; // Radians (0 points right toward the foot spot rack)
@@ -119,16 +151,30 @@ let physicsAccumulator = 0;
 let currentTimeScale = 1;
 let lastFrameTime = performance.now();
 
+// Pre-allocated collision sound tracking buffers (zero per-step GC allocations)
+const preStepVx = new Float64Array(16);
+const preStepVy = new Float64Array(16);
+const preStepPocketed = new Uint8Array(16);
+
 // Pointer Interaction State
 let isDraggingCueBall = false;
 let isAimingOnCanvas = false;
+let isOrbitingCamera3D = false;
 let isPullingPower = false;
 let isDraggingSpin = false;
 let isDraggingFineAim = false;
 let lastFineAimX = 0;
 let fineTickOffset = 0;
 let lastAimPointerAngle = 0;
+let lastAimClientX = 0;
+let lastAimClientY = 0;
+let lastAimMoveTime = 0;
 let lastAimBroadcastAt = 0;
+const active3DPointers = new Map<number, { x: number; y: number }>();
+let prevPinchDist = 0;
+let prevPinchMidX = 0;
+let prevPinchMidY = 0;
+
 let cachedCheatKey = '';
 let cachedCheatPreview: CheatPreview | null = null;
 let lastOrientedSeq = -1;
@@ -142,6 +188,53 @@ try {
   // Ignore storage errors
 }
 let coordinator!: MultiplayerCoordinator;
+
+function syncSoundButtonUi(): void {
+  const muted = soundEngine.isMuted();
+  soundToggleBtn.classList.toggle('muted', muted);
+  soundIconOn.classList.toggle('hidden', muted);
+  soundIconOff.classList.toggle('hidden', !muted);
+}
+syncSoundButtonUi();
+
+soundToggleBtn.addEventListener('click', () => {
+  soundEngine.toggleMuted();
+  syncSoundButtonUi();
+});
+
+function setCameraViewMode(mode: CameraViewMode): void {
+  const effectiveMode: CameraViewMode = !renderer3d ? '2d' : mode;
+  cameraViewMode = effectiveMode;
+  try {
+    localStorage.setItem(STORAGE_CAM_MODE_KEY, effectiveMode);
+  } catch {
+    // Ignore storage errors
+  }
+
+  for (const btn of camPillButtons) {
+    const isMatch = btn.dataset.cam === effectiveMode;
+    btn.classList.toggle('active', isMatch);
+    btn.setAttribute('aria-pressed', String(isMatch));
+  }
+
+  const use2d = effectiveMode === '2d';
+  canvas3d.classList.toggle('hidden', use2d);
+  canvas.classList.toggle('hidden', !use2d);
+
+  if (renderer3d && !use2d) {
+    renderer3d.setCameraMode(effectiveMode);
+  }
+  resizeCanvas();
+}
+
+for (const btn of camPillButtons) {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset.cam as CameraViewMode | undefined;
+    if (mode) {
+      setCameraViewMode(mode);
+    }
+  });
+}
 
 function isPlayerAshton(): boolean {
   const nameFromInput = playerNameInput ? playerNameInput.value.trim() : '';
@@ -273,6 +366,8 @@ coordinator = new MultiplayerCoordinator(initialRoomParam, {
       cueBall.y = shot.cueY;
       applyCueStrike(cueBall, shot.strike);
     }
+    renderer3d?.notifyShotFired(shot.cueX, shot.cueY, shot.strike);
+    soundEngine.playCueStrike(shot.strike.power);
     activeTelemetry = createInitialTelemetry();
     pendingSettledStateFromRemote = shot.settledState;
     physicsAccumulator = 0;
@@ -293,6 +388,9 @@ syncControlsFromState(coordinator.getState());
 
 function resizeCanvas(): void {
   const rect = stageEl.getBoundingClientRect();
+  if (renderer3d && cameraViewMode !== '2d') {
+    renderer3d.resize(rect.width, rect.height);
+  }
   const isInfinite = coordinator ? hasModifier(coordinator.getState(), 'infinite') : false;
   const borderInches = isInfinite ? INFINITE_PREVIEW_BORDER : RAIL_BORDER;
   viewport = computeTableViewport(rect.width, rect.height, 3.5, borderInches);
@@ -304,7 +402,7 @@ function resizeCanvas(): void {
 }
 
 window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
+setCameraViewMode(cameraViewMode);
 
 /**
  * Automatically points the cue stick toward the closest legal object ball at the start of a turn.
@@ -647,10 +745,17 @@ function syncHud(): void {
 
   renderActiveRoomsList();
 
-  // Winner overlay
-  if (state.winner !== null && !isSimulating) {
+  // Winner overlay (allow 3D pocket-drop rattle to finish briefly if winning 8-ball is falling!)
+  const dropStillFalling =
+    cameraViewMode !== '2d' && Boolean(renderer3d && renderer3d.hasActivePocketDrops());
+  if (state.winner !== null && !isSimulating && !dropStillFalling) {
     winnerBanner.classList.remove('hidden');
     winnerTitle.textContent = formattedStatus;
+  } else if (state.winner !== null && !isSimulating && dropStillFalling) {
+    winnerBanner.classList.add('hidden');
+    window.setTimeout(() => {
+      syncHud();
+    }, 360);
   } else {
     winnerBanner.classList.add('hidden');
   }
@@ -677,8 +782,221 @@ function maybeBroadcastAim(): void {
   coordinator.broadcastAim(aimAngle, broadcastPower, spinX, spinY, cueBall.x, cueBall.y);
 }
 
-// Canvas Pointer Events (Aiming & Ball-in-Hand Placement)
+// ============================================================================
+// 3D WebGL Canvas Pointer, Pinch-Zoom & Camera Tilt Controls (#pool-canvas-3d)
+// ============================================================================
+canvas3d.addEventListener('contextmenu', (ev) => ev.preventDefault());
+
+canvas3d.addEventListener(
+  'wheel',
+  (ev) => {
+    if (!renderer3d || cameraViewMode === '2d') return;
+    ev.preventDefault();
+    const zoomScale = ev.deltaY > 0 ? 1.07 : 0.935;
+    renderer3d.adjustCameraGesture(0, 0, zoomScale);
+  },
+  { passive: false }
+);
+
+function computeTwoFingerMetrics(): { dist: number; midX: number; midY: number } | null {
+  if (active3DPointers.size < 2) return null;
+  const pts = Array.from(active3DPointers.values());
+  const a = pts[0];
+  const b = pts[1];
+  return {
+    dist: Math.hypot(b.x - a.x, b.y - a.y),
+    midX: (a.x + b.x) * 0.5,
+    midY: (a.y + b.y) * 0.5,
+  };
+}
+
+canvas3d.addEventListener('pointerdown', (ev) => {
+  soundEngine.unlock();
+  if (!renderer3d) return;
+
+  const state = coordinator.getState();
+  if (!hasRequiredMultiplayerName()) {
+    nameModal.classList.remove('hidden');
+    nameModalInput.focus();
+    return;
+  }
+
+  canvas3d.setPointerCapture(ev.pointerId);
+  active3DPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+  // Multi-touch (2 fingers): pinch to zoom & drag vertically/horizontally to tilt/orbit camera!
+  if (active3DPointers.size >= 2) {
+    isAimingOnCanvas = false;
+    isDraggingCueBall = false;
+    isOrbitingCamera3D = false;
+    const metrics = computeTwoFingerMetrics();
+    if (metrics) {
+      prevPinchDist = metrics.dist;
+      prevPinchMidX = metrics.midX;
+      prevPinchMidY = metrics.midY;
+    }
+    return;
+  }
+
+  const canShootNow = !isSimulating && state.winner === null && coordinator.isMyTurn();
+
+  // Desktop right/middle click, Shift+drag, or swiping in TV mode when not shooting -> camera orbit/tilt!
+  if (
+    ev.button === 2 ||
+    ev.button === 1 ||
+    ev.shiftKey ||
+    (!canShootNow && cameraViewMode === 'broadcast')
+  ) {
+    isOrbitingCamera3D = true;
+    isAimingOnCanvas = false;
+    isDraggingCueBall = false;
+    lastAimClientX = ev.clientX;
+    lastAimClientY = ev.clientY;
+    return;
+  }
+
+  if (!canShootNow) return;
+
+  const rect = canvas3d.getBoundingClientRect();
+  const sx = ev.clientX - rect.left;
+  const sy = ev.clientY - rect.top;
+  const pt = renderer3d.screenToTable(sx, sy);
+  const cueBall = state.balls.find((b) => b.id === 0);
+  if (!cueBall || cueBall.pocketed) return;
+
+  // Check both 3D raycast distance and projected screen-pixel distance so grabbing cue ball works from low angles
+  const cueScreen = renderer3d.tableToScreen(cueBall.x, cueBall.y);
+  const screenDistToCue = Math.hypot(sx - cueScreen.x, sy - cueScreen.y);
+  const tableDistToCue = pt ? Math.hypot(pt.x - cueBall.x, pt.y - cueBall.y) : Infinity;
+
+  if (state.ballInHand && (tableDistToCue <= BALL_RADIUS * 2.6 || screenDistToCue <= 34)) {
+    isDraggingCueBall = true;
+    isAimingOnCanvas = false;
+    return;
+  }
+
+  isAimingOnCanvas = true;
+  isDraggingCueBall = false;
+  lastAimClientX = ev.clientX;
+  lastAimClientY = ev.clientY;
+  lastAimMoveTime = performance.now();
+  if (pt) {
+    lastAimPointerAngle = Math.atan2(pt.y - cueBall.y, pt.x - cueBall.x);
+  }
+});
+
+canvas3d.addEventListener('pointermove', (ev) => {
+  if (!renderer3d) return;
+  if (active3DPointers.has(ev.pointerId)) {
+    active3DPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+  }
+
+  // Two-finger pinch zoom & camera tilt
+  if (active3DPointers.size >= 2) {
+    const metrics = computeTwoFingerMetrics();
+    if (metrics && prevPinchDist > 8) {
+      const zoomScale = prevPinchDist / Math.max(12, metrics.dist);
+      const dMidX = metrics.midX - prevPinchMidX;
+      const dMidY = metrics.midY - prevPinchMidY;
+      renderer3d.adjustCameraGesture(-dMidX * 0.0055, dMidY * 0.0045, zoomScale);
+      prevPinchDist = metrics.dist;
+      prevPinchMidX = metrics.midX;
+      prevPinchMidY = metrics.midY;
+    }
+    return;
+  }
+
+  if (isOrbitingCamera3D) {
+    const dx = ev.clientX - lastAimClientX;
+    const dy = ev.clientY - lastAimClientY;
+    lastAimClientX = ev.clientX;
+    lastAimClientY = ev.clientY;
+    renderer3d.adjustCameraGesture(-dx * 0.0055, dy * 0.0045, 1.0);
+    return;
+  }
+
+  const state = coordinator.getState();
+  if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
+  if (!isDraggingCueBall && !isAimingOnCanvas) return;
+
+  const rect = canvas3d.getBoundingClientRect();
+  const sx = ev.clientX - rect.left;
+  const sy = ev.clientY - rect.top;
+  const pt = renderer3d.screenToTable(sx, sy);
+  const cueBall = state.balls.find((b) => b.id === 0);
+  if (!cueBall || cueBall.pocketed) return;
+
+  if (isDraggingCueBall && state.ballInHand) {
+    if (pt) {
+      const valid = findNearestValidCueBallPosition(pt.x, pt.y, state.balls, state.isBreakShot);
+      cueBall.x = valid.x;
+      cueBall.y = valid.y;
+      maybeBroadcastAim();
+    }
+    return;
+  }
+
+  if (isAimingOnCanvas) {
+    if (cameraViewMode === 'cue') {
+      // Velocity-adaptive horizontal swipe aiming: slow drag = surgical precision, fast swipe = quick turn
+      const now = performance.now();
+      const dtMs = Math.max(4, now - lastAimMoveTime);
+      const dx = ev.clientX - lastAimClientX;
+      lastAimClientX = ev.clientX;
+      lastAimClientY = ev.clientY;
+      lastAimMoveTime = now;
+
+      const speedPxPerMs = Math.abs(dx) / dtMs;
+      const sensitivity = clamp(0.00085 + speedPxPerMs * 0.005, 0.00085, 0.0056);
+      aimAngle += dx * sensitivity;
+      maybeBroadcastAim();
+    } else if (pt) {
+      // Overhead / Broadcast 3D view: smooth relative angle rotation around cue ball
+      const dist = Math.hypot(pt.x - cueBall.x, pt.y - cueBall.y);
+      const curAngle = Math.atan2(pt.y - cueBall.y, pt.x - cueBall.x);
+      if (dist >= BALL_RADIUS * 1.4) {
+        let delta = curAngle - lastAimPointerAngle;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        const sensitivity = dist > 25 ? 0.65 : 0.9;
+        aimAngle += delta * sensitivity;
+        maybeBroadcastAim();
+      }
+      lastAimPointerAngle = curAngle;
+    }
+  }
+});
+
+const endCanvas3DPointer = (ev: PointerEvent) => {
+  active3DPointers.delete(ev.pointerId);
+  if (active3DPointers.size === 0) {
+    if (isDraggingCueBall) {
+      const cueBall = coordinator.getState().balls.find((b) => b.id === 0);
+      if (cueBall && !cueBall.pocketed) {
+        coordinator.persistCueBallPlacement(cueBall.x, cueBall.y);
+        maybeBroadcastAim();
+      }
+    }
+    isDraggingCueBall = false;
+    isAimingOnCanvas = false;
+    isOrbitingCamera3D = false;
+  } else if (active3DPointers.size === 2) {
+    const metrics = computeTwoFingerMetrics();
+    if (metrics) {
+      prevPinchDist = metrics.dist;
+      prevPinchMidX = metrics.midX;
+      prevPinchMidY = metrics.midY;
+    }
+  }
+};
+canvas3d.addEventListener('pointerup', endCanvas3DPointer);
+canvas3d.addEventListener('pointercancel', endCanvas3DPointer);
+
+// ============================================================================
+// Classic 2D Canvas Pointer Events (#pool-canvas)
+// ============================================================================
 canvas.addEventListener('pointerdown', (ev) => {
+  soundEngine.unlock();
   const state = coordinator.getState();
   if (!hasRequiredMultiplayerName()) {
     nameModal.classList.remove('hidden');
@@ -777,6 +1095,7 @@ function computePowerFromPointer(clientX: number): number {
 }
 
 powerTrack.addEventListener('pointerdown', (ev) => {
+  soundEngine.unlock();
   const state = coordinator.getState();
   if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
   isPullingPower = true;
@@ -839,6 +1158,7 @@ powerTrack.addEventListener('pointercancel', () => {
 
 // Shoot Button (Cheat Mode)
 shootBtn.addEventListener('click', () => {
+  soundEngine.unlock();
   const state = coordinator.getState();
   if (isSimulating || state.winner !== null || !coordinator.isMyTurn()) return;
   const finalPower = clamp(pullBackPower || 0.42, 0.05, 1.0);
@@ -916,7 +1236,10 @@ function executeShot(strike: CueStrikeParams): void {
   // 2. Record pending shot in localStorage & broadcast to peer
   coordinator.recordShotStart(cueX, cueY, strike, settledState);
 
-  // 3. Start real-time 240Hz visual physics simulation
+  // 3. Trigger 3D cue strike animation, sound & real-time 240Hz visual physics simulation
+  renderer3d?.notifyShotFired(cueX, cueY, strike);
+  soundEngine.playCueStrike(strike.power);
+
   applyCueStrike(cueBall, strike);
   activeTelemetry = createInitialTelemetry();
   pendingSettledStateFromRemote = settledState;
@@ -1052,6 +1375,7 @@ roomBtn.addEventListener('click', () => {
 });
 
 closeModalBtn.addEventListener('click', () => {
+  soundEngine.unlock();
   if (coordinator.getRoomCode() && !coordinator.getMyPlayerName()) {
     if (!requireNameFromModalInput()) return;
   }
@@ -1074,6 +1398,7 @@ async function copyInviteLinkForRoom(code: string, btn: HTMLButtonElement, defau
 }
 
 newRoomBtn.addEventListener('click', async () => {
+  soundEngine.unlock();
   if (!requireNameFromModalInput()) return;
   const code = coordinator.createMultiplayerRoom(resolveSelectedGameSetup());
   autoOrientAimTowardLegalTarget();
@@ -1082,6 +1407,7 @@ newRoomBtn.addEventListener('click', async () => {
 });
 
 copyLinkBtn.addEventListener('click', async () => {
+  soundEngine.unlock();
   if (!requireNameFromModalInput()) return;
 
   let code = coordinator.getRoomCode();
@@ -1101,6 +1427,7 @@ leaveRoomBtn.addEventListener('click', () => {
 
 joinRoomForm.addEventListener('submit', (ev) => {
   ev.preventDefault();
+  soundEngine.unlock();
   if (!requireNameFromModalInput()) return;
 
   const code = joinCodeInput.value.trim().toUpperCase();
@@ -1113,6 +1440,7 @@ joinRoomForm.addEventListener('submit', (ev) => {
 });
 
 const handleStartNewRack = () => {
+  soundEngine.unlock();
   isSimulating = false;
   pendingSettledStateFromRemote = null;
   coordinator.startNewGame(resolveSelectedGameSetup());
@@ -1178,7 +1506,38 @@ function animate(now: number): void {
     while (physicsAccumulator >= FIXED_DT && stepsThisFrame < 40) {
       physicsAccumulator -= FIXED_DT;
       stepsThisFrame++;
+
+      // Snapshot velocities prior to substep to synthesize exact collision & pocket drop audio
+      for (let i = 0; i < state.balls.length; i++) {
+        const b = state.balls[i];
+        preStepVx[b.id] = b.vx;
+        preStepVy[b.id] = b.vy;
+        preStepPocketed[b.id] = b.pocketed ? 1 : 0;
+      }
+
       const stillMoving = stepPhysics(state.balls, activeTelemetry, FIXED_DT, flags);
+
+      // Detect pocket drops, ball-ball clicks, and K-66 cushion bounces
+      let impulseBalls = 0;
+      let maxDeltaV = 0;
+      for (let i = 0; i < state.balls.length; i++) {
+        const b = state.balls[i];
+        if (!preStepPocketed[b.id] && b.pocketed) {
+          soundEngine.playPocketDrop(Math.hypot(preStepVx[b.id], preStepVy[b.id]));
+        } else if (!b.pocketed) {
+          const dv = Math.hypot(b.vx - preStepVx[b.id], b.vy - preStepVy[b.id]);
+          if (dv > 4.2) {
+            impulseBalls++;
+            if (dv > maxDeltaV) maxDeltaV = dv;
+          }
+        }
+      }
+      if (impulseBalls >= 2) {
+        soundEngine.playBallCollision(maxDeltaV);
+      } else if (impulseBalls === 1) {
+        soundEngine.playCushionBounce(maxDeltaV);
+      }
+
       if (!stillMoving) {
         isSimulating = false;
         physicsAccumulator = 0;
@@ -1200,22 +1559,29 @@ function animate(now: number): void {
   const aimPreview = showAim && !isCheat ? computeAimPreview(state, aimAngle) : null;
   const cheatPreview = showAim && isCheat ? getMemoizedCheatPreview(state) : null;
 
-  renderPoolTable(
-    ctx,
-    viewport,
-    state,
-    {
-      aimAngle,
-      shotPower: pullBackPower,
-      pullBackAmount: pullBackPower,
-      spinX,
-      spinY,
-      showAim,
-      isDraggingCueBall,
-    },
-    aimPreview,
-    cheatPreview
-  );
+  const renderInput = {
+    aimAngle,
+    shotPower: pullBackPower,
+    pullBackAmount: pullBackPower,
+    spinX,
+    spinY,
+    showAim,
+    isDraggingCueBall,
+  };
+
+  if (renderer3d && cameraViewMode !== '2d') {
+    renderer3d.render(
+      state,
+      renderInput,
+      aimPreview,
+      cheatPreview,
+      isSimulating,
+      coordinator.isMyTurn(),
+      dt
+    );
+  } else {
+    renderPoolTable(ctx, viewport, state, renderInput, aimPreview, cheatPreview);
+  }
 
   requestAnimationFrame(animate);
 }
